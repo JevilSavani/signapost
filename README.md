@@ -85,8 +85,8 @@ Facts are prioritized using a strict hierarchy where official government registe
 
 ### Clone and Setup Environment
 ```bash
-git clone https://github.com/JevilSavani/signalpost.git
-cd signalpost
+git clone https://github.com/JevilSavani/signapost.git
+cd signapost
 
 # Create virtual environment (optional but recommended)
 python -m venv .venv
@@ -266,7 +266,7 @@ To: submit@builderr.ai
 Subject: Signalpost Challenge Submission — Norwegian Company Intelligence Agent
 
 Team / Developer: Jevil Savani (jevilsavani@gmail.com)
-Repository URL: https://github.com/JevilSavani/signalpost
+Repository URL: https://github.com/JevilSavani/signapost
 Final Commit Hash: (See git rev-parse HEAD / latest commit on master)
 
 Primary Run Command:

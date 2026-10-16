@@ -2,7 +2,7 @@
 
 **Audit Date**: 2026-10-17  
 **Auditor**: Senior Data Engineer & Competition Auditor  
-**Repository**: [Signalpost — Norwegian Company Intelligence Agent](https://github.com/JevilSavani/signalpost)  
+**Repository**: [Signalpost — Norwegian Company Intelligence Agent](https://github.com/JevilSavani/signapost)  
 **Main Execution Command**: `python -m src.main --evaluate`  
 
 ---

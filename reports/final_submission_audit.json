@@ -3,7 +3,7 @@
   "audit_timestamp": "2026-10-16T19:24:00Z",
   "auditor": "Signalpost Verification System",
   "repository": {
-    "url": "https://github.com/JevilSavani/signalpost",
+    "url": "https://github.com/JevilSavani/signapost",
     "branch": "master",
     "verified_head_commit": "b4e0adefe463e06542bc3c650dfd3d1608e13fb5",
     "untracked_secrets_detected": false,
