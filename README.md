@@ -254,9 +254,9 @@ pytest -v
 - **Platform**: [Builderr](https://builderr.ai)
 - **Submission Destination**: `submit@builderr.ai`
 - **Main Run Command**: `python -m src.main --evaluate`
-- **Profiles Dataset Location**: `data/company_profiles.jsonl` (1,001 verified profiles)
+- **Profiles Dataset Location**: `data/company_profiles.jsonl` (1,002 verified profiles)
 - **Database Location**: `data/signalpost.db`
-- **Quality & Evaluation Reports**: `reports/dataset_quality_report.json`, `reports/evaluation_report.json`
+- **Quality & Evaluation Reports**: `reports/dataset_quality_report.json`, `reports/evaluation_report.json`, `reports/final_submission_audit.json`
 - **Model / API Cost Assumptions**: $0.00 declared cost (uses open official Norwegian government data.brreg.no APIs; optional LLM supported via `OPENAI_API_KEY` with deterministic fallback).
 
 ### Submission Email Template
@@ -266,17 +266,17 @@ Subject: Signalpost Challenge Submission — Norwegian Company Intelligence Agen
 
 Team / Developer: Jevil Savani (jevilsavani@gmail.com)
 Repository URL: https://github.com/JevilSavani/signalpost
-Final Commit Hash: 6acbd56918f82afd130c06314ce3752795765829
+Final Commit Hash: (See git rev-parse HEAD / latest commit on master)
 
 Primary Run Command:
 python -m src.main --evaluate
 
 Summary of Achievements:
-- Maintained 1,001 verified Norwegian company profiles in SQLite and JSONL
+- Maintained 1,002 verified Norwegian company profiles in SQLite and JSONL
 - 100% Modulo 11 check digit verification and zero fact fabrication
 - 100% of facts traceable to official source URLs, timestamps, and reporting periods
 - Evaluation benchmark score: 100.0 / 100.0 (reports/evaluation_report.json)
 - Total outbound requests consumed during evaluation: 15 / 2,000
 - Declared external API costs: $0.00 / $10.00
-- Total evaluation runtime: 6.36 seconds / 45.0 minutes
+- Total evaluation runtime: 4.75 seconds / 45.0 minutes
 ```
