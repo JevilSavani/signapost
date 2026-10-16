@@ -19,13 +19,13 @@
     "duplicates_detected": 0,
     "invalid_identifiers_count": 0,
     "modulo11_compliance_rate": "100.0%",
-    "total_verified_facts": 9255,
+    "total_verified_facts": 9298,
     "facts_missing_evidence_count": 0,
     "evidence_completeness_rate": "100.0%",
     "empty_or_fabricated_records": 0
   },
   "financial_data_correctness_audit": {
-    "total_financial_filings_evaluated": 15,
+    "total_financial_filings_evaluated": 25,
     "equinor_asa_orgnr": "923609016",
     "equinor_asa_reporting_year": 2025,
     "equinor_asa_currency": "USD",
@@ -34,15 +34,15 @@
     "equinor_asa_operating_profit": 25353000000.0,
     "equinor_asa_net_income": 5058000000.0,
     "currency_breakdown": {
-      "NOK": 14,
+      "NOK": 24,
       "USD": 1
     },
     "statement_type_breakdown": {
-      "SELSKAP": 14,
+      "SELSKAP": 24,
       "KONSERN": 1
     },
-    "genuine_zero_value_revenues_verified": 4,
-    "omitted_revenues_preserved_as_none": 2,
+    "genuine_zero_value_revenues_verified": 5,
+    "omitted_revenues_preserved_as_none": 6,
     "suspicious_or_inverted_periods": 0,
     "currency_guessing_or_conversion": "strictly prohibited and 0 occurrences"
   },
