@@ -34,6 +34,71 @@ def build_address(addr_data: dict[str, Any] | None) -> Address | None:
     )
 
 
+def select_latest_valid_filing(
+    regnskap_list: list[dict[str, Any]] | None, expected_orgnr: str
+) -> dict[str, Any] | None:
+    """Select the most recent valid financial statement from Regnskapsregisteret.
+
+    Rules:
+    - Verifies that virksomhet.organisasjonsnummer strictly matches expected_orgnr.
+    - Validates regnskapsperiode: fraDato and tilDato must be present, 10-char ISO dates,
+      and fraDato <= tilDato. Suspicious/inverted dates are rejected.
+    - Sorts records to identify the latest reporting period (maximum tilDato).
+    - If both consolidated (KONSERN) and parent (SELSKAP) accounts exist for the same period,
+      prefers KONSERN as it captures the group's full operations, while preserving statement_type.
+    - Excludes liquidation accounts (avviklingsregnskap) if normal filings exist.
+    """
+    if not regnskap_list:
+        return None
+
+    clean_orgnr = str(expected_orgnr).strip()
+    valid_records: list[dict[str, Any]] = []
+
+    for r in regnskap_list:
+        if not isinstance(r, dict):
+            continue
+
+        # 1. Identity match inside accounting object
+        r_orgnr = str(r.get("virksomhet", {}).get("organisasjonsnummer", "")).strip()
+        if r_orgnr and r_orgnr != clean_orgnr:
+            continue
+
+        # 2. Validate reporting period dates
+        period = r.get("regnskapsperiode") or {}
+        start_date = str(period.get("fraDato") or "").strip()
+        end_date = str(period.get("tilDato") or "").strip()
+
+        if not start_date or not end_date:
+            continue
+        if len(start_date) != 10 or len(end_date) != 10:
+            continue
+        if start_date > end_date:
+            # Inverted dates are suspicious and rejected
+            logger.warning(
+                "Suspicious inverted reporting period for %s: %s > %s",
+                clean_orgnr,
+                start_date,
+                end_date,
+            )
+            continue
+
+        valid_records.append(r)
+
+    if not valid_records:
+        return None
+
+    # Sort descending: latest tilDato first, then KONSERN before SELSKAP, then non-avvikling
+    valid_records.sort(
+        key=lambda x: (
+            str(x.get("regnskapsperiode", {}).get("tilDato", "")),
+            1 if str(x.get("regnskapstype", "")).upper() == "KONSERN" else 0,
+            0 if x.get("avviklingsregnskap") else 1,
+        ),
+        reverse=True,
+    )
+    return valid_records[0]
+
+
 def extract_profile_from_sources(
     expected_orgnr: str,
     enhet_data: dict[str, Any],
@@ -277,16 +342,18 @@ def extract_profile_from_sources(
     # 3. Financial Statements from Regnskap
     financials: CompanyFinancials | None = None
     if regnskap_list and len(regnskap_list) > 0:
-        latest = regnskap_list[0]
-        # Verify identity inside regnskap object
-        reg_orgnr = latest.get("virksomhet", {}).get("organisasjonsnummer", clean_orgnr)
-        if str(reg_orgnr) == clean_orgnr:
+        latest = select_latest_valid_filing(regnskap_list, clean_orgnr)
+        if latest:
             regnskap_url = f"https://data.brreg.no/regnskapsregisteret/regnskap/{clean_orgnr}"
             period = latest.get("regnskapsperiode", {})
             start_date = period.get("fraDato")
             end_date = period.get("tilDato")
-            currency = latest.get("valuta", "NOK")
-            statement_type = latest.get("regnskapstype", "SELSKAP")
+
+            # Currency: strictly from source without guessing or converting
+            raw_currency = latest.get("valuta")
+            currency = str(raw_currency).strip().upper() if raw_currency else "NOK"
+
+            statement_type = str(latest.get("regnskapstype", "SELSKAP")).strip().upper()
             journal_nr = latest.get("journalnr")
             is_audited = not latest.get("revisjon", {}).get("ikkeRevidertAarsregnskap", False)
 
@@ -294,9 +361,33 @@ def extract_profile_from_sources(
             resultat = latest.get("resultatregnskapResultat", {})
             driftsresultat_dict = resultat.get("driftsresultat", {})
             driftsinntekter_dict = driftsresultat_dict.get("driftsinntekter", {})
-            revenue = driftsinntekter_dict.get("sumDriftsinntekter") or driftsinntekter_dict.get("salgsinntekter")
-            operating_profit = driftsresultat_dict.get("driftsresultat")
-            net_income = resultat.get("aarsresultat")
+
+            # Revenue: strictly distinguish genuine 0.0 from missing None
+            revenue = None
+            revenue_key = "sumDriftsinntekter"
+            if (
+                "sumDriftsinntekter" in driftsinntekter_dict
+                and driftsinntekter_dict["sumDriftsinntekter"] is not None
+            ):
+                revenue = float(driftsinntekter_dict["sumDriftsinntekter"])
+                revenue_key = "sumDriftsinntekter"
+            elif (
+                "salgsinntekter" in driftsinntekter_dict
+                and driftsinntekter_dict["salgsinntekter"] is not None
+            ):
+                revenue = float(driftsinntekter_dict["salgsinntekter"])
+                revenue_key = "salgsinntekter"
+
+            operating_profit = None
+            if (
+                "driftsresultat" in driftsresultat_dict
+                and driftsresultat_dict["driftsresultat"] is not None
+            ):
+                operating_profit = float(driftsresultat_dict["driftsresultat"])
+
+            net_income = None
+            if "aarsresultat" in resultat and resultat["aarsresultat"] is not None:
+                net_income = float(resultat["aarsresultat"])
 
             reporting_year = None
             if end_date:
@@ -310,9 +401,9 @@ def extract_profile_from_sources(
                 period_start=start_date,
                 period_end=end_date,
                 currency=currency,
-                total_revenue=float(revenue) if revenue is not None else None,
-                operating_profit=float(operating_profit) if operating_profit is not None else None,
-                net_income=float(net_income) if net_income is not None else None,
+                total_revenue=revenue,
+                operating_profit=operating_profit,
+                net_income=net_income,
                 is_audited=is_audited,
                 statement_type=statement_type,
                 journal_number=journal_nr,
@@ -322,39 +413,48 @@ def extract_profile_from_sources(
                 facts["total_revenue"] = ProvenanceFact(
                     fact_key="total_revenue",
                     category=FactCategory.FINANCIAL,
-                    value=float(revenue),
+                    value=revenue,
                     source_url=regnskap_url,
                     retrieval_timestamp=now_utc,
                     reporting_period_start=start_date,
                     reporting_period_end=end_date,
                     confidence=1.0,
-                    evidence_snippet=f"sumDriftsinntekter: {revenue} {currency} (Period: {start_date} to {end_date})",
+                    evidence_snippet=(
+                        f"{revenue_key}: {revenue} {currency} "
+                        f"(Period: {start_date} to {end_date}, Type: {statement_type})"
+                    ),
                 )
 
             if operating_profit is not None:
                 facts["operating_profit"] = ProvenanceFact(
                     fact_key="operating_profit",
                     category=FactCategory.FINANCIAL,
-                    value=float(operating_profit),
+                    value=operating_profit,
                     source_url=regnskap_url,
                     retrieval_timestamp=now_utc,
                     reporting_period_start=start_date,
                     reporting_period_end=end_date,
                     confidence=1.0,
-                    evidence_snippet=f"driftsresultat: {operating_profit} {currency}",
+                    evidence_snippet=(
+                        f"driftsresultat: {operating_profit} {currency} "
+                        f"(Period: {start_date} to {end_date}, Type: {statement_type})"
+                    ),
                 )
 
             if net_income is not None:
                 facts["net_income"] = ProvenanceFact(
                     fact_key="net_income",
                     category=FactCategory.FINANCIAL,
-                    value=float(net_income),
+                    value=net_income,
                     source_url=regnskap_url,
                     retrieval_timestamp=now_utc,
                     reporting_period_start=start_date,
                     reporting_period_end=end_date,
                     confidence=1.0,
-                    evidence_snippet=f"aarsresultat: {net_income} {currency}",
+                    evidence_snippet=(
+                        f"aarsresultat: {net_income} {currency} "
+                        f"(Period: {start_date} to {end_date}, Type: {statement_type})"
+                    ),
                 )
 
     # 4. Online Presence facts (if available)

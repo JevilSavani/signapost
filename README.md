@@ -233,10 +233,11 @@ pytest -v
 - `tests/test_identity.py`: 7 tests verifying sanitization, Modulo 11 calculations, valid orgnrs, invalid lengths, illegal remainder 1, and exception handling.
 - `tests/test_evidence.py`: 3 tests verifying fact provenance, financial reporting periods, and change record schemas.
 - `tests/test_collectors.py`: 3 tests verifying prompt injection defenses, cross-company identity mismatch rejection, and non-fabrication of missing fields.
+- `tests/test_financials.py`: 6 tests verifying chronological reporting period sorting, group account (KONSERN) priority, suspicious/inverted period rejection, currency fidelity without conversion, genuine reported zero revenue preservation, and omitted revenue non-fabrication.
 - `tests/test_dataset.py`: 4 tests verifying profile deduplication, partial profile handling, state change detection, and JSONL export validity.
 - `tests/test_updates.py`: 2 tests verifying immutable audit trail persistence and preservation of verified facts when upstream omits data.
 - `tests/test_limits.py`: 4 tests verifying request limits, runtime limits, cost limits, and token-bucket pacing.
-**Result**: 23 passed in 0.71s.
+**Result**: 29 passed in 0.71s.
 
 ---
 

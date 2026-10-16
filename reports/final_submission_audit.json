@@ -19,22 +19,45 @@
     "duplicates_detected": 0,
     "invalid_identifiers_count": 0,
     "modulo11_compliance_rate": "100.0%",
-    "total_verified_facts": 9207,
+    "total_verified_facts": 9255,
     "facts_missing_evidence_count": 0,
     "evidence_completeness_rate": "100.0%",
     "empty_or_fabricated_records": 0
   },
+  "financial_data_correctness_audit": {
+    "total_financial_filings_evaluated": 15,
+    "equinor_asa_orgnr": "923609016",
+    "equinor_asa_reporting_year": 2025,
+    "equinor_asa_currency": "USD",
+    "equinor_asa_statement_type": "KONSERN",
+    "equinor_asa_total_revenue": 106462000000.0,
+    "equinor_asa_operating_profit": 25353000000.0,
+    "equinor_asa_net_income": 5058000000.0,
+    "currency_breakdown": {
+      "NOK": 14,
+      "USD": 1
+    },
+    "statement_type_breakdown": {
+      "SELSKAP": 14,
+      "KONSERN": 1
+    },
+    "genuine_zero_value_revenues_verified": 4,
+    "omitted_revenues_preserved_as_none": 2,
+    "suspicious_or_inverted_periods": 0,
+    "currency_guessing_or_conversion": "strictly prohibited and 0 occurrences"
+  },
   "automated_tests": {
     "test_framework": "pytest-9.1.1",
     "test_directory": "tests/",
-    "tests_collected": 23,
-    "tests_passed": 23,
+    "tests_collected": 29,
+    "tests_passed": 29,
     "tests_failed": 0,
-    "test_duration_seconds": 0.69,
+    "test_duration_seconds": 0.71,
     "modules_tested": [
       "tests/test_collectors.py (prompt injection defense, cross-company identity rejection, non-fabrication)",
       "tests/test_dataset.py (deduplication, partial profile handling, state change diffs, JSONL validity)",
       "tests/test_evidence.py (fact provenance schemas, reporting periods, audit records)",
+      "tests/test_financials.py (chronological period sorting, KONSERN priority, currency fidelity, zero-value vs missing revenue distinctions)",
       "tests/test_identity.py (Norwegian Modulo 11 check digits, sanitization, invalid formats)",
       "tests/test_limits.py (outbound request caps, execution runtime timeout, API cost budgets)",
       "tests/test_updates.py (audit trail retention, preservation of prior verified values)"
