@@ -266,7 +266,7 @@ Subject: Signalpost Challenge Submission — Norwegian Company Intelligence Agen
 
 Team / Developer: Jevil Savani (jevilsavani@gmail.com)
 Repository URL: https://github.com/JevilSavani/signalpost
-Final Commit Hash: <FINAL_COMMIT_HASH>
+Final Commit Hash: bed750b5af3f4e57b1e4a501c2e70123ec29fbe6
 
 Primary Run Command:
 python -m src.main --evaluate
