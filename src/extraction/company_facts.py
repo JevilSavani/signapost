@@ -151,9 +151,13 @@ def extract_profile_from_sources(
         category=FactCategory.REGISTRATION,
         value=f"{legal_form_code} - {legal_form_desc}",
         source_url=enhet_url,
+        source_type="official_registry",
+        source_title="Brønnøysundregistrene Enhetsregisteret",
+        associated_orgnr=clean_orgnr,
         retrieval_timestamp=now_utc,
         publication_date=enhet_data.get("registreringsdatoEnhetsregisteret"),
         confidence=1.0,
+        is_independently_confirmed=True,
         evidence_snippet=json.dumps(org_form),
     )
 
@@ -176,8 +180,12 @@ def extract_profile_from_sources(
         category=FactCategory.REGISTRATION,
         value=status,
         source_url=enhet_url,
+        source_type="official_registry",
+        source_title="Brønnøysundregistrene Enhetsregisteret",
+        associated_orgnr=clean_orgnr,
         retrieval_timestamp=now_utc,
         confidence=1.0,
+        is_independently_confirmed=True,
         evidence_snippet=f"konkurs={is_bankrupt}, underAvvikling={is_liquidating}, tvang={is_forced}",
     )
 
@@ -188,9 +196,13 @@ def extract_profile_from_sources(
             category=FactCategory.REGISTRATION,
             value=reg_date,
             source_url=enhet_url,
+            source_type="official_registry",
+            source_title="Brønnøysundregistrene Enhetsregisteret",
+            associated_orgnr=clean_orgnr,
             retrieval_timestamp=now_utc,
             publication_date=reg_date,
             confidence=1.0,
+            is_independently_confirmed=True,
             evidence_snippet=f"registreringsdatoEnhetsregisteret: {reg_date}",
         )
 
@@ -201,9 +213,13 @@ def extract_profile_from_sources(
             category=FactCategory.REGISTRATION,
             value=founding_date,
             source_url=enhet_url,
+            source_type="official_registry",
+            source_title="Brønnøysundregistrene Enhetsregisteret",
+            associated_orgnr=clean_orgnr,
             retrieval_timestamp=now_utc,
             publication_date=founding_date,
             confidence=1.0,
+            is_independently_confirmed=True,
             evidence_snippet=f"stiftelsesdato: {founding_date}",
         )
 
@@ -217,8 +233,12 @@ def extract_profile_from_sources(
             category=FactCategory.CLASSIFICATION,
             value=f"{nace_code} - {nace_desc or ''}".strip(),
             source_url=enhet_url,
+            source_type="official_registry",
+            source_title="Brønnøysundregistrene Enhetsregisteret",
+            associated_orgnr=clean_orgnr,
             retrieval_timestamp=now_utc,
             confidence=1.0,
+            is_independently_confirmed=True,
             evidence_snippet=json.dumps(nace_data),
         )
 
@@ -230,8 +250,12 @@ def extract_profile_from_sources(
             category=FactCategory.LOCATION,
             value=office_addr.format_single_line(),
             source_url=enhet_url,
+            source_type="official_registry",
+            source_title="Brønnøysundregistrene Enhetsregisteret",
+            associated_orgnr=clean_orgnr,
             retrieval_timestamp=now_utc,
             confidence=1.0,
+            is_independently_confirmed=True,
             evidence_snippet=json.dumps(enhet_data.get("forretningsadresse")),
         )
 
@@ -246,9 +270,13 @@ def extract_profile_from_sources(
             category=FactCategory.OPERATIONAL,
             value=emp_count,
             source_url=enhet_url,
+            source_type="official_registry",
+            source_title="Brønnøysundregistrene Enhetsregisteret",
+            associated_orgnr=clean_orgnr,
             retrieval_timestamp=now_utc,
             publication_date=enhet_data.get("registreringsdatoAntallAnsatteEnhetsregisteret"),
             confidence=1.0,
+            is_independently_confirmed=True,
             evidence_snippet=f"antallAnsatte: {emp_count}",
         )
 
@@ -265,9 +293,13 @@ def extract_profile_from_sources(
             category=FactCategory.OPERATIONAL,
             value=statutory_purpose,
             source_url=enhet_url,
+            source_type="official_registry",
+            source_title="Brønnøysundregistrene Enhetsregisteret",
+            associated_orgnr=clean_orgnr,
             retrieval_timestamp=now_utc,
             publication_date=enhet_data.get("vedtektsdato"),
             confidence=1.0,
+            is_independently_confirmed=True,
             evidence_snippet=statutory_purpose[:300],
         )
 
@@ -278,8 +310,12 @@ def extract_profile_from_sources(
             category=FactCategory.ONLINE,
             value=website,
             source_url=enhet_url,
+            source_type="official_registry",
+            source_title="Brønnøysundregistrene Enhetsregisteret",
+            associated_orgnr=clean_orgnr,
             retrieval_timestamp=now_utc,
             confidence=1.0,
+            is_independently_confirmed=True,
             evidence_snippet=f"hjemmeside: {website}",
         )
 
@@ -326,14 +362,23 @@ def extract_profile_from_sources(
         if officers:
             ceo = next((o.name for o in officers if "daglig leder" in o.role_description.lower()), None)
             chair = next((o.name for o in officers if "styrets leder" in o.role_description.lower()), None)
+            auditor = next((o.name for o in officers if "revisor" in o.role_description.lower()), None)
+            board_members = [
+                o.name for o in officers
+                if "styremedlem" in o.role_description.lower() and o.name not in (ceo, chair)
+            ]
             if ceo:
                 facts["ceo_name"] = ProvenanceFact(
                     fact_key="ceo_name",
                     category=FactCategory.OFFICER,
                     value=ceo,
                     source_url=roller_url,
+                    source_type="official_roles",
+                    source_title="Brønnøysundregistrene Roller",
+                    associated_orgnr=clean_orgnr,
                     retrieval_timestamp=now_utc,
                     confidence=1.0,
+                    is_independently_confirmed=True,
                     evidence_snippet=f"Daglig leder: {ceo}",
                 )
             if chair:
@@ -342,9 +387,41 @@ def extract_profile_from_sources(
                     category=FactCategory.OFFICER,
                     value=chair,
                     source_url=roller_url,
+                    source_type="official_roles",
+                    source_title="Brønnøysundregistrene Roller",
+                    associated_orgnr=clean_orgnr,
                     retrieval_timestamp=now_utc,
                     confidence=1.0,
+                    is_independently_confirmed=True,
                     evidence_snippet=f"Styrets leder: {chair}",
+                )
+            if auditor:
+                facts["auditor"] = ProvenanceFact(
+                    fact_key="auditor",
+                    category=FactCategory.OFFICER,
+                    value=auditor,
+                    source_url=roller_url,
+                    source_type="official_roles",
+                    source_title="Brønnøysundregistrene Roller",
+                    associated_orgnr=clean_orgnr,
+                    retrieval_timestamp=now_utc,
+                    confidence=1.0,
+                    is_independently_confirmed=True,
+                    evidence_snippet=f"Revisor: {auditor}",
+                )
+            if board_members:
+                facts["board_members"] = ProvenanceFact(
+                    fact_key="board_members",
+                    category=FactCategory.OFFICER,
+                    value=board_members,
+                    source_url=roller_url,
+                    source_type="official_roles",
+                    source_title="Brønnøysundregistrene Roller",
+                    associated_orgnr=clean_orgnr,
+                    retrieval_timestamp=now_utc,
+                    confidence=1.0,
+                    is_independently_confirmed=True,
+                    evidence_snippet=f"Styremedlemmer: {', '.join(board_members[:4])}",
                 )
 
     # 3. Financial Statements from Regnskap
@@ -440,6 +517,7 @@ def extract_profile_from_sources(
                     category=FactCategory.FINANCIAL,
                     value=revenue,
                     source_url=regnskap_url,
+                    source_type="official_financial_statement",
                     source_title="Brønnøysundregistrene Regnskapsregisteret",
                     associated_orgnr=clean_orgnr,
                     retrieval_timestamp=now_utc,
@@ -459,6 +537,7 @@ def extract_profile_from_sources(
                     category=FactCategory.FINANCIAL,
                     value=operating_profit,
                     source_url=regnskap_url,
+                    source_type="official_financial_statement",
                     source_title="Brønnøysundregistrene Regnskapsregisteret",
                     associated_orgnr=clean_orgnr,
                     retrieval_timestamp=now_utc,
@@ -478,6 +557,7 @@ def extract_profile_from_sources(
                     category=FactCategory.FINANCIAL,
                     value=net_income,
                     source_url=regnskap_url,
+                    source_type="official_financial_statement",
                     source_title="Brønnøysundregistrene Regnskapsregisteret",
                     associated_orgnr=clean_orgnr,
                     retrieval_timestamp=now_utc,
@@ -497,6 +577,7 @@ def extract_profile_from_sources(
                     category=FactCategory.FINANCIAL,
                     value=assets,
                     source_url=regnskap_url,
+                    source_type="official_financial_statement",
                     source_title="Brønnøysundregistrene Regnskapsregisteret",
                     associated_orgnr=clean_orgnr,
                     retrieval_timestamp=now_utc,
@@ -516,6 +597,7 @@ def extract_profile_from_sources(
                     category=FactCategory.FINANCIAL,
                     value=equity,
                     source_url=regnskap_url,
+                    source_type="official_financial_statement",
                     source_title="Brønnøysundregistrene Regnskapsregisteret",
                     associated_orgnr=clean_orgnr,
                     retrieval_timestamp=now_utc,
@@ -551,6 +633,7 @@ def extract_profile_from_sources(
                 category=FactCategory.LOCATION,
                 value=sorted(operating_locations),
                 source_url=f"https://data.brreg.no/enhetsregisteret/api/underenheter?overordnetEnhet={clean_orgnr}",
+                source_type="official_underenheter",
                 source_title="Brønnøysundregistrene Underenheter",
                 associated_orgnr=clean_orgnr,
                 retrieval_timestamp=now_utc,
@@ -569,6 +652,7 @@ def extract_profile_from_sources(
                     category=FactCategory.ONLINE,
                     value=online_data.meta_description,
                     source_url=web_url,
+                    source_type="verified_website",
                     source_title="Verified Official Website",
                     associated_orgnr=clean_orgnr,
                     retrieval_timestamp=now_utc,
@@ -582,6 +666,7 @@ def extract_profile_from_sources(
                     category=FactCategory.ONLINE,
                     value=online_data.contact_email,
                     source_url=web_url,
+                    source_type="verified_website",
                     source_title="Verified Official Website",
                     associated_orgnr=clean_orgnr,
                     retrieval_timestamp=now_utc,
@@ -597,6 +682,7 @@ def extract_profile_from_sources(
                         category=FactCategory.OPERATIONAL,
                         value=job_titles,
                         source_url=online_data.active_jobs[0].get("url", web_url),
+                        source_type="verified_website",
                         source_title="Company Career Page",
                         associated_orgnr=clean_orgnr,
                         retrieval_timestamp=now_utc,
@@ -612,6 +698,7 @@ def extract_profile_from_sources(
                         category=FactCategory.OPERATIONAL,
                         value=headlines,
                         source_url=online_data.announcements[0].get("url", web_url),
+                        source_type="verified_website",
                         source_title="Company Announcements",
                         associated_orgnr=clean_orgnr,
                         retrieval_timestamp=now_utc,
@@ -643,6 +730,7 @@ def extract_profile_from_sources(
             category=FactCategory.CORPORATE if hasattr(FactCategory, "CORPORATE") else FactCategory.REGISTRATION,
             value=share_capital,
             source_url=enhet_url,
+            source_type="official_registry",
             source_title="Brønnøysundregistrene Enhetsregisteret",
             associated_orgnr=clean_orgnr,
             retrieval_timestamp=now_utc,
@@ -652,6 +740,23 @@ def extract_profile_from_sources(
             evidence_snippet=json.dumps(kapital_raw),
         )
 
+    # Extract corporate group status
+    is_group = enhet_data.get("erIKonsern")
+    if is_group is not None:
+        facts["is_part_of_group"] = ProvenanceFact(
+            fact_key="is_part_of_group",
+            category=FactCategory.CORPORATE if hasattr(FactCategory, "CORPORATE") else FactCategory.REGISTRATION,
+            value=bool(is_group),
+            source_url=enhet_url,
+            source_type="official_registry",
+            source_title="Brønnøysundregistrene Enhetsregisteret",
+            associated_orgnr=clean_orgnr,
+            retrieval_timestamp=now_utc,
+            confidence=1.0,
+            is_independently_confirmed=True,
+            evidence_snippet=f"erIKonsern: {is_group}",
+        )
+
     # 6. Merge seed facts from dataset if available
     if seed_facts:
         for sk, sf in seed_facts.items():
@@ -659,6 +764,24 @@ def extract_profile_from_sources(
                 facts[sk] = sf
             else:
                 facts[sk].is_independently_confirmed = True
+
+    # 7. Strict Fact Identity Integrity Enforcement
+    mismatched = []
+    for k, fact in facts.items():
+        if fact.associated_orgnr != clean_orgnr:
+            if not fact.associated_orgnr:
+                fact.associated_orgnr = clean_orgnr
+            else:
+                logger.error(
+                    "Identity mismatch for fact '%s': expected %s, found %s. Rejecting fact.",
+                    k,
+                    clean_orgnr,
+                    fact.associated_orgnr,
+                )
+                mismatched.append(k)
+
+    for k in mismatched:
+        del facts[k]
 
     # Build and return the consolidated CompanyProfile
     profile = CompanyProfile(

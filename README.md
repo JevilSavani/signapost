@@ -310,7 +310,8 @@ Run the full automated test suite:
 pytest -v
 ```
 
-### 47 Passing Tests Across 10 Test Modules:
+### 52 Passing Tests Across 11 Test Modules:
+- `tests/test_pipeline_audit.py` (5 tests): Financial statement facts reconciliation, empty filing handling, evidence-grounded synthesis without speculation, fact identity integrity enforcement, and sources consulted extraction count strict matching.
 - `tests/test_dataset_loader.py` (8 tests): Streaming iteration, lookup by orgnr, leading-zero preservation, malformed JSON handling, duplicate handling, missing file exception, Unicode safety, and seed facts conversion.
 - `tests/test_pipeline_outcomes.py` (7 tests): Valid company flow, nonexistent company flow, invalid orgnr flow, batch input ordering preservation, exact 1:1 result count, envelope schema compliance, and sources consulted tracking.
 - `tests/test_identity.py` (7 tests): Sanitization, valid orgnrs, invalid lengths, illegal remainder 1, and exception handling.

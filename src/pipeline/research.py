@@ -160,7 +160,6 @@ def research_company_pipeline(
                 url=f"https://data.brreg.no/enhetsregisteret/api/enheter/{clean_orgnr}",
                 status=ResearchOutcome.AVAILABLE if enhet_data else ResearchOutcome.NOT_AVAILABLE,
                 http_code=200 if enhet_data else 404,
-                facts_extracted=8 if enhet_data else 0,
             )
         )
     except Exception as reg_err:
@@ -232,15 +231,14 @@ def research_company_pipeline(
     if enhet_data:
         try:
             underenheter_list = reg.get_underenheter(clean_orgnr)
-            if underenheter_list:
-                sources_consulted.append(
-                    SourceConsulted(
-                        source_type="official_underenheter",
-                        url=f"https://data.brreg.no/enhetsregisteret/api/underenheter?overordnetEnhet={clean_orgnr}",
-                        status=ResearchOutcome.AVAILABLE,
-                        facts_extracted=len(underenheter_list),
-                    )
+            sources_consulted.append(
+                SourceConsulted(
+                    source_type="official_underenheter",
+                    url=f"https://data.brreg.no/enhetsregisteret/api/underenheter?overordnetEnhet={clean_orgnr}",
+                    status=ResearchOutcome.AVAILABLE if underenheter_list else ResearchOutcome.NOT_AVAILABLE,
+                    http_code=200,
                 )
+            )
         except Exception as und_err:
             logger.debug("Underenheter error for %s: %s", clean_orgnr, und_err)
 
@@ -299,14 +297,45 @@ def research_company_pipeline(
         seed_facts=seed_facts,
     )
 
-    # 9. Determine Field-Level Statuses
+    # 9. Reconcile Sources Consulted with genuinely parsed and validated facts
+    for sc in sources_consulted:
+        matching_facts = [
+            f for f in profile.facts.values()
+            if (f.source_url == sc.url or f.source_type == sc.source_type)
+        ]
+        sc.facts_extracted = len(matching_facts)
+        if sc.facts_extracted > 0:
+            sc.status = ResearchOutcome.AVAILABLE
+        else:
+            if sc.http_code == 403:
+                sc.status = ResearchOutcome.BLOCKED
+            elif sc.http_code and sc.http_code >= 500:
+                sc.status = ResearchOutcome.FAILED
+            elif sc.status == ResearchOutcome.AMBIGUOUS:
+                pass  # retain ambiguous status
+            else:
+                sc.status = ResearchOutcome.NOT_AVAILABLE
+
+    # 10. Determine Field-Level Statuses
     field_statuses["legal_name"] = ResearchOutcome.AVAILABLE if profile.name else ResearchOutcome.NOT_AVAILABLE
     field_statuses["legal_form"] = ResearchOutcome.AVAILABLE if profile.legal_form_code else ResearchOutcome.NOT_AVAILABLE
     field_statuses["company_status"] = ResearchOutcome.AVAILABLE if profile.status else ResearchOutcome.NOT_AVAILABLE
     field_statuses["registered_office_address"] = ResearchOutcome.AVAILABLE if profile.registered_office_address else ResearchOutcome.NOT_AVAILABLE
     field_statuses["financials"] = (
         ResearchOutcome.AVAILABLE
-        if (profile.financials and profile.financials.total_revenue is not None)
+        if (
+            profile.financials
+            and any(
+                x is not None
+                for x in [
+                    profile.financials.total_revenue,
+                    profile.financials.operating_profit,
+                    profile.financials.net_income,
+                    profile.financials.total_assets,
+                    profile.financials.total_equity,
+                ]
+            )
+        )
         else ResearchOutcome.NOT_AVAILABLE
     )
     field_statuses["employee_count"] = (

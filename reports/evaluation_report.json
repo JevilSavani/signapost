@@ -1,6 +1,6 @@
 {
   "benchmark_name": "Signalpost Competition Evaluation Benchmark",
-  "evaluated_at": "2026-10-19T17:27:51.640562+00:00",
+  "evaluated_at": "2026-10-19T17:53:23.312207+00:00",
   "sample_size": 100,
   "total_score": 100.0,
   "max_possible_score": 100.0,
@@ -26,19 +26,19 @@
     "information_coverage": {
       "score": 35.0,
       "max": 35.0,
-      "coverage_ratio": 0.8291,
+      "coverage_ratio": 0.84,
       "field_presence": {
         "legal_name": "100.0% (100/100)",
         "legal_form": "100.0% (100/100)",
         "company_status": "100.0% (100/100)",
         "registered_office_address": "100.0% (100/100)",
         "industry_code": "100.0% (100/100)",
-        "registration_date": "99.0% (99/100)",
-        "founding_date": "99.0% (99/100)",
-        "share_capital": "99.0% (99/100)",
-        "statutory_purpose": "99.0% (99/100)",
-        "employee_count": "8.0% (8/100)",
-        "official_website": "8.0% (8/100)"
+        "registration_date": "100.0% (100/100)",
+        "founding_date": "100.0% (100/100)",
+        "share_capital": "100.0% (100/100)",
+        "statutory_purpose": "100.0% (100/100)",
+        "employee_count": "14.0% (14/100)",
+        "official_website": "10.0% (10/100)"
       }
     },
     "identity_and_evidence": {
@@ -74,8 +74,8 @@
     "failed_requests": 0,
     "declared_cost_usd": 0.0,
     "max_cost_usd": 10.0,
-    "elapsed_seconds": 4.55,
+    "elapsed_seconds": 23.82,
     "max_seconds": 2700.0
   },
-  "evaluation_duration_seconds": 4.25
+  "evaluation_duration_seconds": 23.53
 }

@@ -36,7 +36,11 @@ def generate_company_synthesis(
         status_str = "IN LIQUIDATION (Under avvikling)"
 
     industry_desc = profile.nace_description or "General commercial activity"
-    purpose_desc = profile.statutory_purpose or profile.business_description or "Not specified in public registry"
+    purpose_desc = (
+        profile.statutory_purpose
+        or profile.business_description
+        or "Statutory purpose is not specified in public registry"
+    )
 
     summary_text = (
         f"### 1. Executive Summary & Core Activity\n"
@@ -53,8 +57,8 @@ def generate_company_synthesis(
         if profile.registered_office_address
         else "No physical office address registered"
     )
-    reg_date = profile.registration_date or "Unknown"
-    found_date = profile.founding_date or "Unknown"
+    reg_date = profile.registration_date or "Not reported"
+    found_date = profile.founding_date or "Not reported"
 
     locations_line = ""
     if profile.operating_locations:
@@ -63,13 +67,19 @@ def generate_company_synthesis(
             loc_str += f" (+{len(profile.operating_locations) - 6} more)"
         locations_line = f"\n- **Operating Locations / Establishments**: {loc_str}"
 
+    group_str = (
+        "Registered as part of a corporate group"
+        if profile.is_part_of_group is True
+        else ("Not registered as part of a corporate group" if profile.is_part_of_group is False else "Not reported in public registry")
+    )
+
     identity_text = (
         f"### 2. Legal Identity & Business Locations\n"
         f"- **Organization Number**: `{profile.registration_number}` (Modulo 11 verified)\n"
         f"- **Registered Office**: {addr_line}\n"
         f"- **Incorporation / Foundation Date**: {found_date}\n"
         f"- **Official Registration Date**: {reg_date}\n"
-        f"- **Corporate Group Status**: {'Part of a corporate group' if profile.is_part_of_group else 'Independent entity / Not specified'}\n"
+        f"- **Corporate Group Status**: {group_str}\n"
         f"- **Share Capital**: {f'{profile.share_capital:,.0f} NOK' if profile.share_capital is not None else 'Not registered'}"
         f"{locations_line}"
     )
@@ -78,53 +88,70 @@ def generate_company_synthesis(
     # 3. Financial & Workforce Profile
     fin = profile.financials
     fin_lines: list[str] = []
-    if fin:
+    if fin and any(
+        x is not None
+        for x in [
+            fin.total_revenue,
+            fin.operating_profit,
+            fin.net_income,
+            fin.total_assets,
+            fin.total_equity,
+        ]
+    ):
         period_str = f"{fin.period_start or '?'} to {fin.period_end or '?'}"
-        fin_lines.append(f"- **Reporting Period**: {period_str} (Statement: {fin.statement_type or 'SELSKAP'}, Audited: {'Yes' if fin.is_audited else 'No'})")
+        audit_note = (
+            f", Audited: {'Yes' if fin.is_audited else 'No (unaudited / exemption)'}"
+            if fin.is_audited is not None
+            else ""
+        )
+        fin_lines.append(f"- **Reporting Period**: {period_str} (Statement: {fin.statement_type or 'SELSKAP'}{audit_note})")
         fin_lines.append(
             f"- **Operating Revenue**: {f'{fin.total_revenue:,.0f} {fin.currency}' if fin.total_revenue is not None else 'Not reported in filing'}"
         )
         fin_lines.append(
-            f"- **Operating Profit (Driftsresultat)**: {f'{fin.operating_profit:,.0f} {fin.currency}' if fin.operating_profit is not None else 'Not reported'}"
+            f"- **Operating Profit (Driftsresultat)**: {f'{fin.operating_profit:,.0f} {fin.currency}' if fin.operating_profit is not None else 'Not reported in filing'}"
         )
         fin_lines.append(
-            f"- **Net Annual Income (Årsresultat)**: {f'{fin.net_income:,.0f} {fin.currency}' if fin.net_income is not None else 'Not reported'}"
+            f"- **Net Annual Income (Årsresultat)**: {f'{fin.net_income:,.0f} {fin.currency}' if fin.net_income is not None else 'Not reported in filing'}"
         )
         if fin.total_assets is not None:
             fin_lines.append(f"- **Total Assets (Eiendeler)**: {fin.total_assets:,.0f} {fin.currency}")
         if fin.total_equity is not None:
             fin_lines.append(f"- **Total Equity (Egenkapital)**: {fin.total_equity:,.0f} {fin.currency}")
     else:
-        fin_lines.append("- **Annual Accounts**: No public financial statements currently available in Regnskapsregisteret.")
+        fin_lines.append("- **Annual Accounts**: Financial statements are not available in Regnskapsregisteret.")
 
-    emp_str = f"{profile.employee_count} registered employees" if profile.employee_count is not None else "No registered employees (typical for single-person holding or asset entities)"
+    emp_str = (
+        f"{profile.employee_count} registered employees"
+        if profile.employee_count is not None
+        else "Not available in public records"
+    )
     fin_lines.append(f"- **Workforce Count**: {emp_str}")
 
     fin_text = "### 3. Financial Performance & Employment\n" + "\n".join(fin_lines)
     sections.append(fin_text)
 
-    # 4. Leadership & Governance
-    ceo = next((o.name for o in profile.officers if "daglig leder" in o.role_description.lower()), None)
-    chair = next((o.name for o in profile.officers if "styrets leder" in o.role_description.lower()), None)
-    auditor = next((o.name for o in profile.officers if "revisor" in o.role_description.lower()), None)
-
+    # 4. Leadership & Governance (Strictly fact-grounded)
     lead_lines: list[str] = []
-    if ceo:
-        lead_lines.append(f"- **Managing Director / CEO**: {ceo}")
-    if chair:
-        lead_lines.append(f"- **Board Chair (Styrets leder)**: {chair}")
-    if auditor:
-        lead_lines.append(f"- **Statutory Auditor (Revisor)**: {auditor}")
+    ceo_fact = profile.facts.get("ceo_name")
+    chair_fact = profile.facts.get("board_chair")
+    auditor_fact = profile.facts.get("auditor")
+    board_fact = profile.facts.get("board_members")
 
-    other_officers = [o for o in profile.officers if o.name not in (ceo, chair, auditor)]
-    if other_officers:
-        officer_names = ", ".join(f"{o.name} ({o.role_description})" for o in other_officers[:4])
-        if len(other_officers) > 4:
-            officer_names += f" (+{len(other_officers) - 4} more)"
-        lead_lines.append(f"- **Other Officers / Board**: {officer_names}")
+    if ceo_fact:
+        lead_lines.append(f"- **Managing Director / CEO**: {ceo_fact.value}")
+    if chair_fact:
+        lead_lines.append(f"- **Board Chair (Styrets leder)**: {chair_fact.value}")
+    if auditor_fact:
+        lead_lines.append(f"- **Statutory Auditor (Revisor)**: {auditor_fact.value}")
+    if board_fact and isinstance(board_fact.value, list) and board_fact.value:
+        b_str = ", ".join(board_fact.value[:4])
+        if len(board_fact.value) > 4:
+            b_str += f" (+{len(board_fact.value) - 4} more)"
+        lead_lines.append(f"- **Board Members**: {b_str}")
 
     if not lead_lines:
-        lead_lines.append("- **Registered Roles**: No public management or board officers recorded in Enhetsregisteret.")
+        lead_lines.append("- **Registered Roles**: Key officer roles are not recorded in official register.")
 
     lead_text = "### 4. Leadership & Governance\n" + "\n".join(lead_lines)
     sections.append(lead_text)
@@ -138,7 +165,7 @@ def generate_company_synthesis(
     if profile.phone:
         pub_lines.append(f"- **Contact Phone**: {profile.phone}")
 
-    if profile.online_presence:
+    if profile.online_presence and profile.online_presence.is_identity_verified:
         if profile.online_presence.active_jobs:
             job_titles = [f"`{j.get('title')}`" for j in profile.online_presence.active_jobs[:3]]
             pub_lines.append(f"- **Open Job Vacancies**: {', '.join(job_titles)}")
@@ -147,7 +174,9 @@ def generate_company_synthesis(
             pub_lines.append(f"- **Recent Announcements**: {', '.join(ann_titles)}")
 
     if not pub_lines:
-        pub_lines.append("- **Public Web Presence**: No verified website, job postings, or announcements detected.")
+        pub_lines.append(
+            "- **Public Web Presence**: Information on website, job postings, or announcements is not available from verified sources."
+        )
 
     pub_text = "### 5. Verified Public Activity & Presence\n" + "\n".join(pub_lines)
     sections.append(pub_text)
@@ -167,18 +196,29 @@ def generate_company_synthesis(
     changes_text = "### 6. Profile Changes & Historical Audit\n" + "\n".join(history_lines[:5])
     sections.append(changes_text)
 
-    # 7. Important Information Gaps (Explicit Unknowns)
+    # 7. Important Information Gaps (Explicit Unknowns without speculation)
     unknowns: list[str] = []
     if profile.employee_count is None:
-        unknowns.append("Employee count is unrecorded in public Aa-registeret (common for holding / SPV vehicles).")
+        unknowns.append("Employee count is unrecorded / not available in public registry records.")
     if not profile.website:
-        unknowns.append("No official corporate domain or website is registered with state authorities.")
-    if not profile.financials:
-        unknowns.append("No audited financial filing is currently published in Regnskapsregisteret.")
+        unknowns.append("No official corporate domain or website is registered or verified in available public sources.")
+    if not profile.financials or not any(
+        x is not None
+        for x in [
+            profile.financials.total_revenue,
+            profile.financials.operating_profit,
+            profile.financials.net_income,
+            profile.financials.total_assets,
+            profile.financials.total_equity,
+        ]
+    ):
+        unknowns.append("No public financial statements are currently available in Regnskapsregisteret.")
     elif profile.financials.total_revenue is None:
-        unknowns.append("Revenue line item was not reported in the latest financial filing.")
-    if not ceo:
-        unknowns.append("Managing Director (Daglig leder) is not registered in official roller register.")
+        unknowns.append("Operating revenue line item was not reported in the latest financial filing.")
+    if not ceo_fact:
+        unknowns.append("Managing Director (Daglig leder) is not registered in official roles register.")
+    if not chair_fact:
+        unknowns.append("Board Chair (Styrets leder) is not registered in official roles register.")
 
     if not unknowns:
         unknowns.append("All primary corporate, operational, and financial dimensions are grounded with verified data.")
@@ -188,7 +228,6 @@ def generate_company_synthesis(
 
     # 8. Evidence & Provenance Traceability
     evidence_lines: list[str] = []
-    # Distinct sources consulted
     distinct_sources = set()
     for f in profile.facts.values():
         if f.source_url:
@@ -200,9 +239,10 @@ def generate_company_synthesis(
     else:
         evidence_lines.append("- Grounded via official Brønnøysundregistrene open register endpoints.")
 
+    total_facts = len(profile.facts)
     evidence_text = (
         f"### 8. Evidence Traceability & Grounding\n"
-        f"Verified against {len(profile.facts)} evidentiary facts across official Norwegian registers:\n"
+        f"Verified against {total_facts} structured evidentiary facts across {len(distinct_sources)} verified sources:\n"
         + "\n".join(evidence_lines)
     )
     sections.append(evidence_text)
