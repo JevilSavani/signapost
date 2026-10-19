@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 from pydantic import BaseModel, Field
 
-from src.models.evidence import ProvenanceFact, FactChangeRecord
+from src.models.evidence import ProvenanceFact, FactChangeRecord, ResearchOutcome
 
 
 class Address(BaseModel):
@@ -42,6 +42,8 @@ class CompanyFinancials(BaseModel):
     total_revenue: float | None = None
     operating_profit: float | None = None
     net_income: float | None = None
+    total_assets: float | None = None
+    total_equity: float | None = None
     is_audited: bool | None = None
     statement_type: str | None = None  # e.g., 'SELSKAP' or 'KONSERN'
     journal_number: str | None = None
@@ -56,6 +58,9 @@ class OnlinePresence(BaseModel):
     business_summary: str | None = None
     contact_email: str | None = None
     contact_phone: str | None = None
+    active_jobs: list[dict[str, Any]] = Field(default_factory=list)
+    announcements: list[dict[str, Any]] = Field(default_factory=list)
+    is_identity_verified: bool = False
 
 
 class CompanyProfile(BaseModel):
@@ -70,6 +75,7 @@ class CompanyProfile(BaseModel):
     legal_form_code: str = Field(default="AS", description="Entity code (e.g., AS, ASA, ENK)")
     legal_form_description: str = Field(default="Aksjeselskap")
     status: str = Field(default="ACTIVE", description="ACTIVE, BANKRUPT, LIQUIDATING, or DISSOLVED")
+    outcome: ResearchOutcome = Field(default=ResearchOutcome.AVAILABLE, description="Overall competition research outcome")
 
     is_bankrupt: bool = False
     is_in_liquidation: bool = False
@@ -86,6 +92,7 @@ class CompanyProfile(BaseModel):
 
     registered_office_address: Address | None = None
     postal_address: Address | None = None
+    operating_locations: list[str] = Field(default_factory=list, description="Verified branch or establishment locations")
 
     statutory_purpose: str | None = None
     business_description: str | None = None
@@ -100,6 +107,11 @@ class CompanyProfile(BaseModel):
     officers: list[CompanyOfficer] = Field(default_factory=list)
     financials: CompanyFinancials | None = None
     online_presence: OnlinePresence | None = None
+
+    # Analytical synthesis and field-level outcome status map
+    synthesis: str | None = Field(default=None, description="Concise, verified factual synthesis profile")
+    field_statuses: dict[str, ResearchOutcome] = Field(default_factory=dict, description="Field-level outcome breakdown")
+    sources_consulted: list[dict[str, Any]] = Field(default_factory=list, description="Audit of all sources checked and their responses")
 
     # Fact-level evidence map
     facts: dict[str, ProvenanceFact] = Field(default_factory=dict)

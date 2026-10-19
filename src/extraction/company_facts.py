@@ -105,6 +105,8 @@ def extract_profile_from_sources(
     roller_data: dict[str, Any] | None = None,
     regnskap_list: list[dict[str, Any]] | None = None,
     online_data: OnlinePresence | None = None,
+    underenheter_list: list[dict[str, Any]] | None = None,
+    seed_facts: dict[str, ProvenanceFact] | None = None,
 ) -> CompanyProfile:
     """Synthesize raw multi-source payloads into a verified CompanyProfile.
 
@@ -132,9 +134,12 @@ def extract_profile_from_sources(
             category=FactCategory.IDENTITY,
             value=name,
             source_url=enhet_url,
+            source_title="Brønnøysundregistrene Enhetsregisteret",
+            associated_orgnr=clean_orgnr,
             retrieval_timestamp=now_utc,
             publication_date=enhet_data.get("registreringsdatoEnhetsregisteret"),
             confidence=1.0,
+            is_independently_confirmed=True,
             evidence_snippet=f"navn: {name}",
         )
 
@@ -289,14 +294,17 @@ def extract_profile_from_sources(
                 person = r.get("person") or {}
                 full_name = ""
                 if isinstance(person, dict):
-                    p_navn = person.get("navn") or {}
+                    p_navn = person.get("navn")
                     if isinstance(p_navn, dict):
                         first_name = p_navn.get("fornavn", "")
                         last_name = p_navn.get("etternavn", "")
+                    elif isinstance(p_navn, str):
+                        full_name = p_navn.strip()
                     else:
                         first_name = person.get("fornavn", "")
                         last_name = person.get("etternavn", "")
-                    full_name = f"{first_name} {last_name}".strip()
+                    if not full_name:
+                        full_name = f"{first_name} {last_name}".strip()
 
                 if not full_name and "enhet" in r:
                     raw_enhet_name = r["enhet"].get("navn", "")
@@ -396,6 +404,21 @@ def extract_profile_from_sources(
                 except Exception:
                     pass
 
+            # Balance sheet assets and equity
+            assets = None
+            eiendeler_dict = latest.get("eiendeler", {})
+            if "sumEiendeler" in eiendeler_dict and eiendeler_dict["sumEiendeler"] is not None:
+                assets = float(eiendeler_dict["sumEiendeler"])
+            elif "sumEgenkapitalGjeld" in latest.get("egenkapitalGjeld", {}):
+                val = latest.get("egenkapitalGjeld", {}).get("sumEgenkapitalGjeld")
+                if val is not None:
+                    assets = float(val)
+
+            equity = None
+            egenkapital_dict = latest.get("egenkapitalGjeld", {}).get("egenkapital", {})
+            if "sumEgenkapital" in egenkapital_dict and egenkapital_dict["sumEgenkapital"] is not None:
+                equity = float(egenkapital_dict["sumEgenkapital"])
+
             financials = CompanyFinancials(
                 reporting_year=reporting_year,
                 period_start=start_date,
@@ -404,6 +427,8 @@ def extract_profile_from_sources(
                 total_revenue=revenue,
                 operating_profit=operating_profit,
                 net_income=net_income,
+                total_assets=assets,
+                total_equity=equity,
                 is_audited=is_audited,
                 statement_type=statement_type,
                 journal_number=journal_nr,
@@ -415,10 +440,13 @@ def extract_profile_from_sources(
                     category=FactCategory.FINANCIAL,
                     value=revenue,
                     source_url=regnskap_url,
+                    source_title="Brønnøysundregistrene Regnskapsregisteret",
+                    associated_orgnr=clean_orgnr,
                     retrieval_timestamp=now_utc,
                     reporting_period_start=start_date,
                     reporting_period_end=end_date,
                     confidence=1.0,
+                    is_independently_confirmed=True,
                     evidence_snippet=(
                         f"{revenue_key}: {revenue} {currency} "
                         f"(Period: {start_date} to {end_date}, Type: {statement_type})"
@@ -431,10 +459,13 @@ def extract_profile_from_sources(
                     category=FactCategory.FINANCIAL,
                     value=operating_profit,
                     source_url=regnskap_url,
+                    source_title="Brønnøysundregistrene Regnskapsregisteret",
+                    associated_orgnr=clean_orgnr,
                     retrieval_timestamp=now_utc,
                     reporting_period_start=start_date,
                     reporting_period_end=end_date,
                     confidence=1.0,
+                    is_independently_confirmed=True,
                     evidence_snippet=(
                         f"driftsresultat: {operating_profit} {currency} "
                         f"(Period: {start_date} to {end_date}, Type: {statement_type})"
@@ -447,39 +478,147 @@ def extract_profile_from_sources(
                     category=FactCategory.FINANCIAL,
                     value=net_income,
                     source_url=regnskap_url,
+                    source_title="Brønnøysundregistrene Regnskapsregisteret",
+                    associated_orgnr=clean_orgnr,
                     retrieval_timestamp=now_utc,
                     reporting_period_start=start_date,
                     reporting_period_end=end_date,
                     confidence=1.0,
+                    is_independently_confirmed=True,
                     evidence_snippet=(
                         f"aarsresultat: {net_income} {currency} "
                         f"(Period: {start_date} to {end_date}, Type: {statement_type})"
                     ),
                 )
 
-    # 4. Online Presence facts (if available)
+            if assets is not None:
+                facts["total_assets"] = ProvenanceFact(
+                    fact_key="total_assets",
+                    category=FactCategory.FINANCIAL,
+                    value=assets,
+                    source_url=regnskap_url,
+                    source_title="Brønnøysundregistrene Regnskapsregisteret",
+                    associated_orgnr=clean_orgnr,
+                    retrieval_timestamp=now_utc,
+                    reporting_period_start=start_date,
+                    reporting_period_end=end_date,
+                    confidence=1.0,
+                    is_independently_confirmed=True,
+                    evidence_snippet=(
+                        f"sumEiendeler: {assets} {currency} "
+                        f"(Period: {start_date} to {end_date}, Type: {statement_type})"
+                    ),
+                )
+
+            if equity is not None:
+                facts["total_equity"] = ProvenanceFact(
+                    fact_key="total_equity",
+                    category=FactCategory.FINANCIAL,
+                    value=equity,
+                    source_url=regnskap_url,
+                    source_title="Brønnøysundregistrene Regnskapsregisteret",
+                    associated_orgnr=clean_orgnr,
+                    retrieval_timestamp=now_utc,
+                    reporting_period_start=start_date,
+                    reporting_period_end=end_date,
+                    confidence=1.0,
+                    is_independently_confirmed=True,
+                    evidence_snippet=(
+                        f"sumEgenkapital: {equity} {currency} "
+                        f"(Period: {start_date} to {end_date}, Type: {statement_type})"
+                    ),
+                )
+
+    # 4. Operating Locations from Underenheter
+    operating_locations: list[str] = []
+    if underenheter_list:
+        loc_set = set()
+        for u in underenheter_list:
+            if not isinstance(u, dict):
+                continue
+            b_addr = u.get("beliggenhetsadresse") or {}
+            kommune = b_addr.get("kommune")
+            poststed = b_addr.get("poststed")
+            navn_u = u.get("navn")
+            label = kommune or poststed or navn_u
+            if label and label not in loc_set:
+                loc_set.add(label)
+                operating_locations.append(str(label))
+
+        if operating_locations:
+            facts["operating_locations"] = ProvenanceFact(
+                fact_key="operating_locations",
+                category=FactCategory.LOCATION,
+                value=sorted(operating_locations),
+                source_url=f"https://data.brreg.no/enhetsregisteret/api/underenheter?overordnetEnhet={clean_orgnr}",
+                source_title="Brønnøysundregistrene Underenheter",
+                associated_orgnr=clean_orgnr,
+                retrieval_timestamp=now_utc,
+                confidence=1.0,
+                is_independently_confirmed=True,
+                evidence_snippet=f"Registered establishments: {', '.join(sorted(operating_locations)[:5])}",
+            )
+
+    # 5. Online Presence facts (only if verified)
     if online_data and online_data.website_url:
         web_url = online_data.website_url
-        if online_data.meta_description:
-            facts["meta_description"] = ProvenanceFact(
-                fact_key="meta_description",
-                category=FactCategory.ONLINE,
-                value=online_data.meta_description,
-                source_url=web_url,
-                retrieval_timestamp=now_utc,
-                confidence=0.85,
-                evidence_snippet=online_data.meta_description[:250],
-            )
-        if online_data.contact_email:
-            facts["contact_email"] = ProvenanceFact(
-                fact_key="contact_email",
-                category=FactCategory.ONLINE,
-                value=online_data.contact_email,
-                source_url=web_url,
-                retrieval_timestamp=now_utc,
-                confidence=0.85,
-                evidence_snippet=f"Email: {online_data.contact_email}",
-            )
+        if online_data.is_identity_verified:
+            if online_data.meta_description:
+                facts["meta_description"] = ProvenanceFact(
+                    fact_key="meta_description",
+                    category=FactCategory.ONLINE,
+                    value=online_data.meta_description,
+                    source_url=web_url,
+                    source_title="Verified Official Website",
+                    associated_orgnr=clean_orgnr,
+                    retrieval_timestamp=now_utc,
+                    confidence=0.85,
+                    is_independently_confirmed=True,
+                    evidence_snippet=online_data.meta_description[:250],
+                )
+            if online_data.contact_email:
+                facts["contact_email"] = ProvenanceFact(
+                    fact_key="contact_email",
+                    category=FactCategory.ONLINE,
+                    value=online_data.contact_email,
+                    source_url=web_url,
+                    source_title="Verified Official Website",
+                    associated_orgnr=clean_orgnr,
+                    retrieval_timestamp=now_utc,
+                    confidence=0.85,
+                    is_independently_confirmed=True,
+                    evidence_snippet=f"Email: {online_data.contact_email}",
+                )
+            if online_data.active_jobs:
+                job_titles = [j.get("title") for j in online_data.active_jobs if j.get("title")]
+                if job_titles:
+                    facts["job_vacancies"] = ProvenanceFact(
+                        fact_key="job_vacancies",
+                        category=FactCategory.OPERATIONAL,
+                        value=job_titles,
+                        source_url=online_data.active_jobs[0].get("url", web_url),
+                        source_title="Company Career Page",
+                        associated_orgnr=clean_orgnr,
+                        retrieval_timestamp=now_utc,
+                        confidence=0.85,
+                        is_independently_confirmed=True,
+                        evidence_snippet=f"Active listings: {', '.join(job_titles[:3])}",
+                    )
+            if online_data.announcements:
+                headlines = [a.get("headline") for a in online_data.announcements if a.get("headline")]
+                if headlines:
+                    facts["public_announcements"] = ProvenanceFact(
+                        fact_key="public_announcements",
+                        category=FactCategory.OPERATIONAL,
+                        value=headlines,
+                        source_url=online_data.announcements[0].get("url", web_url),
+                        source_title="Company Announcements",
+                        associated_orgnr=clean_orgnr,
+                        retrieval_timestamp=now_utc,
+                        confidence=0.85,
+                        is_independently_confirmed=True,
+                        evidence_snippet=f"Announcements: {', '.join(headlines[:2])}",
+                    )
 
     # Extract share capital
     kapital_raw = enhet_data.get("kapital")
@@ -504,11 +643,22 @@ def extract_profile_from_sources(
             category=FactCategory.CORPORATE if hasattr(FactCategory, "CORPORATE") else FactCategory.REGISTRATION,
             value=share_capital,
             source_url=enhet_url,
+            source_title="Brønnøysundregistrene Enhetsregisteret",
+            associated_orgnr=clean_orgnr,
             retrieval_timestamp=now_utc,
             publication_date=pub_d,
             confidence=1.0,
+            is_independently_confirmed=True,
             evidence_snippet=json.dumps(kapital_raw),
         )
+
+    # 6. Merge seed facts from dataset if available
+    if seed_facts:
+        for sk, sf in seed_facts.items():
+            if sk not in facts:
+                facts[sk] = sf
+            else:
+                facts[sk].is_independently_confirmed = True
 
     # Build and return the consolidated CompanyProfile
     profile = CompanyProfile(
@@ -529,13 +679,14 @@ def extract_profile_from_sources(
         nace_description=nace_desc,
         registered_office_address=office_addr,
         postal_address=post_addr,
+        operating_locations=operating_locations,
         statutory_purpose=statutory_purpose,
         business_description=(
-            online_data.business_summary or online_data.meta_description if online_data else None
+            online_data.business_summary or online_data.meta_description if online_data and online_data.is_identity_verified else None
         ) or statutory_purpose,
-        website=website or (online_data.website_url if online_data else None),
-        phone=enhet_data.get("telefon") or (online_data.contact_phone if online_data else None),
-        email=online_data.contact_email if online_data else None,
+        website=website or (online_data.website_url if online_data and online_data.is_identity_verified else None),
+        phone=enhet_data.get("telefon") or (online_data.contact_phone if online_data and online_data.is_identity_verified else None),
+        email=online_data.contact_email if online_data and online_data.is_identity_verified else None,
         is_part_of_group=enhet_data.get("erIKonsern"),
         share_capital=share_capital,
         officers=officers,

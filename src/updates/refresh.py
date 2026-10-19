@@ -130,17 +130,33 @@ def refresh_company_profile(orgnr: str, crawl_website: bool = True) -> dict[str,
     if crawl_website and website_url:
         online_data = web_collector.collect(website_url)
 
+    from src.storage.dataset_loader import dataset_loader
+    from src.extraction.synthesis import generate_company_synthesis
+
+    seed_facts = None
+    if dataset_loader.exists():
+        try:
+            seed_facts = dataset_loader.get_seed_facts(clean_orgnr)
+        except Exception:
+            pass
+
     new_profile = extract_profile_from_sources(
         expected_orgnr=clean_orgnr,
         enhet_data=enhet,
         roller_data=roller,
         regnskap_list=regnskap,
         online_data=online_data,
+        seed_facts=seed_facts,
     )
 
     if old_profile:
         # Preserve creation timestamp
         new_profile.created_at = old_profile.created_at
+        # Preserve prior verified facts if currently omitted by upstream source
+        for k, old_fact in old_profile.facts.items():
+            if k not in new_profile.facts:
+                new_profile.facts[k] = old_fact
+
         # Compute change delta
         changes = detect_fact_changes(old_profile, new_profile)
         # Combine existing history with new changes
@@ -161,6 +177,7 @@ def refresh_company_profile(orgnr: str, crawl_website: bool = True) -> dict[str,
         ]
         new_profile.change_history = changes
 
+    new_profile.synthesis = generate_company_synthesis(new_profile, new_profile.change_history)
     company_repository.save_profile(new_profile)
 
     return {

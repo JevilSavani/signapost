@@ -89,10 +89,14 @@ def evaluate_sample_profiles(sample_size: int = 100) -> dict[str, Any]:
 
         for fact in p.facts.values():
             total_facts_in_sample += 1
-            # Check source url and timestamp
+            # Check source url and timestamp (supports http, https, and dataset identifiers)
             if (
                 fact.source_url
-                and (fact.source_url.startswith("http://") or fact.source_url.startswith("https://"))
+                and (
+                    fact.source_url.startswith("http://")
+                    or fact.source_url.startswith("https://")
+                    or fact.source_url.startswith("dataset:")
+                )
                 and fact.retrieval_timestamp is not None
                 and fact.confidence > 0.0
             ):
@@ -163,12 +167,33 @@ def evaluate_sample_profiles(sample_size: int = 100) -> dict[str, Any]:
 
     eval_duration = round(time.time() - start_eval_time, 2)
 
+    # Competition 50 / 30 / 12 / 8 rubric mapping
+    rubric_50_30_12_8 = {
+        "recall_and_coverage": {
+            "score": round(min(50.0, (coverage_score / 35.0) * 50.0), 2),
+            "max": 50.0,
+        },
+        "precision_and_evidence": {
+            "score": round(min(30.0, identity_and_evidence_score), 2),
+            "max": 30.0,
+        },
+        "synthesis": {
+            "score": round(min(12.0, ((explanation_score + update_score * 0.2) / 14.0) * 12.0), 2),
+            "max": 12.0,
+        },
+        "ux_and_reliability": {
+            "score": round(min(8.0, (ease_of_use_score / 5.0) * 8.0), 2),
+            "max": 8.0,
+        },
+    }
+
     evaluation_report = {
         "benchmark_name": "Signalpost Competition Evaluation Benchmark",
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
         "sample_size": len(sample),
         "total_score": total_score,
         "max_possible_score": 100.0,
+        "competition_rubric_breakdown": rubric_50_30_12_8,
         "category_breakdown": {
             "information_coverage": {
                 "score": coverage_score,
@@ -225,3 +250,89 @@ def run_evaluation_benchmark() -> dict[str, Any]:
 
     logger.info("Evaluation report saved to %s", report_path)
     return report
+
+
+def run_100_company_smoke_test(input_file: Path | str | None = None) -> dict[str, Any]:
+    """Execute 100-company end-to-end smoke test verifying pipeline reliability and output schema."""
+    from src.pipeline.research import load_input_identifiers, process_batch
+    from src.storage.dataset_loader import dataset_loader
+
+    start_time = time.time()
+    logger.info("Initiating 100-company smoke test...")
+
+    # Build representative 100-company batch
+    identifiers: list[str] = []
+    if input_file and Path(input_file).is_file():
+        identifiers = load_input_identifiers(input_file)[:100]
+
+    if len(identifiers) < 100:
+        # Well-known anchors
+        anchors = [
+            "923609016",  # Equinor ASA
+            "984851006",  # DNB Bank ASA
+            "982463718",  # Telenor ASA
+            "886581432",  # Aker ASA
+            "920237126",  # Atea ASA
+        ]
+        identifiers.extend(anchors)
+
+        # Sample from dataset
+        if dataset_loader.exists():
+            for record in dataset_loader.iter_records():
+                if record.organisation_number not in identifiers:
+                    identifiers.append(record.organisation_number)
+                if len(identifiers) >= 97:
+                    break
+
+        # Edge cases: absent from dataset, and malformed
+        identifiers.append("999999995")  # Valid Modulo 11 check digit, but unassigned/absent
+        identifiers.append("923609015")  # Invalid Modulo 11 check digit (fails immediately)
+        identifiers.append("810034882")  # Sandnes Elektriske AS from 2025 dataset
+
+        identifiers = identifiers[:100]
+
+    logger.info("Executing research on %d inputs...", len(identifiers))
+    envelopes = process_batch(identifiers, crawl_website=False, max_workers=4)
+
+    # Validate results
+    exact_count = len(envelopes)
+    outcome_counts: dict[str, int] = {}
+    grounded_count = 0
+    total_facts = 0
+
+    for idx, env in enumerate(envelopes):
+        # Verify ordering
+        expected_id = str(identifiers[idx]).strip()
+        actual_id = str(env.organisation_number).strip()
+        assert expected_id == actual_id, f"Order mismatch at index {idx}: expected {expected_id}, got {actual_id}"
+
+        outcome_val = env.outcome.value if hasattr(env.outcome, "value") else str(env.outcome)
+        outcome_counts[outcome_val] = outcome_counts.get(outcome_val, 0) + 1
+
+        for fact in env.facts.values():
+            total_facts += 1
+            if fact.source_url and fact.confidence > 0:
+                grounded_count += 1
+
+    elapsed = round(time.time() - start_time, 2)
+    smoke_report = {
+        "smoke_test_name": "Signalpost 100-Company End-to-End Pipeline Smoke Test",
+        "executed_at": datetime.now(timezone.utc).isoformat(),
+        "total_inputs": len(identifiers),
+        "total_results_returned": exact_count,
+        "input_ordering_preserved": True,
+        "outcome_breakdown": outcome_counts,
+        "total_facts_extracted": total_facts,
+        "evidence_grounded_facts": grounded_count,
+        "grounding_percentage": f"{(grounded_count / total_facts * 100):.1f}%" if total_facts > 0 else "N/A",
+        "resource_consumption": global_budget.get_summary(),
+        "elapsed_seconds": elapsed,
+        "status": "PASSED" if exact_count == len(identifiers) else "FAILED",
+    }
+
+    report_path = settings.reports_dir / "smoke_test_report.json"
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(smoke_report, f, indent=2)
+
+    logger.info("Smoke test complete: %d/%d results returned in %.2fs. Report saved to %s", exact_count, len(identifiers), elapsed, report_path)
+    return smoke_report

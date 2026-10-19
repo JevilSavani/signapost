@@ -22,6 +22,12 @@ class Settings(BaseModel):
     database_path: Path = Field(
         default_factory=lambda: BASE_DIR / os.getenv("DATABASE_PATH", "data/signalpost.db")
     )
+    master_dataset_path: Path = Field(
+        default_factory=lambda: BASE_DIR / os.getenv("MASTER_DATASET_PATH", "data/financial-filer-master-2025.jsonl")
+    )
+    dataset_index_path: Path = Field(
+        default_factory=lambda: BASE_DIR / os.getenv("DATASET_INDEX_PATH", "data/dataset_index.sqlite")
+    )
     profiles_export_path: Path = Field(
         default_factory=lambda: BASE_DIR / os.getenv("PROFILES_EXPORT_PATH", "data/company_profiles.jsonl")
     )

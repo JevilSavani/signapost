@@ -48,7 +48,10 @@ htmlcov/
 # Local database and cache (optional gitkeep in data/)
 data/*.db
 data/*.sqlite3
+data/*.sqlite
 data/cache/
+data/financial-filer-master-2025.jsonl
+data/dataset_index.*
 
 # System files
 .DS_Store

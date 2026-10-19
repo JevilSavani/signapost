@@ -71,6 +71,22 @@ class RegistryCollector:
             logger.warning("Regnskap API returned status %s for %s", resp.status_code, clean_orgnr)
             return None
 
+    def get_underenheter(self, orgnr: str) -> list[dict[str, Any]]:
+        """Fetch registered operating establishments / branch locations for this legal entity."""
+        clean_orgnr = parse_and_verify_orgnr(orgnr)
+        url = "https://data.brreg.no/enhetsregisteret/api/underenheter"
+        params = {"overordnetEnhet": clean_orgnr, "size": 100}
+
+        try:
+            resp = self.client.get(url, params=params, use_cache=True)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("_embedded", {}).get("underenheter", [])
+            return []
+        except Exception as e:
+            logger.debug("Could not fetch underenheter for %s: %s", clean_orgnr, e)
+            return []
+
     def list_companies(
         self, organisasjonsform: str = "AS", page: int = 0, size: int = 100
     ) -> list[dict[str, Any]]:

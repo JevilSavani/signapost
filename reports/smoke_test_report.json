@@ -1,0 +1,27 @@
+{
+  "smoke_test_name": "Signalpost 100-Company End-to-End Pipeline Smoke Test",
+  "executed_at": "2026-10-19T17:26:56.564686+00:00",
+  "total_inputs": 100,
+  "total_results_returned": 100,
+  "input_ordering_preserved": true,
+  "outcome_breakdown": {
+    "available": 98,
+    "failed": 2
+  },
+  "total_facts_extracted": 1745,
+  "evidence_grounded_facts": 1745,
+  "grounding_percentage": "100.0%",
+  "resource_consumption": {
+    "outbound_requests": 377,
+    "max_requests": 2000,
+    "requests_remaining": 1623,
+    "cache_hits": 15,
+    "failed_requests": 1,
+    "declared_cost_usd": 0.0,
+    "max_cost_usd": 10.0,
+    "elapsed_seconds": 77.19,
+    "max_seconds": 2700.0
+  },
+  "elapsed_seconds": 76.88,
+  "status": "PASSED"
+}

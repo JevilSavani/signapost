@@ -71,7 +71,75 @@ class WebsiteCollector:
         except Exception:
             return True
 
-    def collect(self, raw_website_url: str | None) -> OnlinePresence:
+    def _verify_website_identity(
+        self, soup: BeautifulSoup, page_text: str, expected_orgnr: str | None, expected_name: str | None
+    ) -> tuple[bool, str]:
+        """Verify whether the webpage evidence supports ownership by the requested company."""
+        if not expected_orgnr and not expected_name:
+            return True, "No verification constraints supplied"
+
+        # 1. Search for explicit organization number on the page
+        if expected_orgnr:
+            clean_expected = "".join(filter(str.isdigit, str(expected_orgnr)))
+            # Regex for 9-digit patterns with optional spaces or dots
+            found_orgs = re.findall(r"(?:org(?:anisasjons)?\.?\s*nr\.?|organisasjonsnummer)\s*:?\s*([0-9\s.]{9,15})", page_text, re.I)
+            for found_raw in found_orgs:
+                found_digits = "".join(filter(str.isdigit, found_raw))
+                if len(found_digits) == 9:
+                    if found_digits == clean_expected:
+                        return True, f"Verified exact organization number {clean_expected} on page"
+                    else:
+                        return False, f"Mismatch: Page declares different organization number {found_digits}"
+
+            # Check general presence of the 9-digit sequence
+            if clean_expected in page_text.replace(" ", ""):
+                return True, f"Verified organization number {clean_expected} present in page content"
+
+        # 2. Check company name match in title, footer, or metadata
+        if expected_name:
+            norm_name = re.sub(r"\b(AS|ASA|ENK|BA|DA|ANS|NUF)\b", "", expected_name, flags=re.I).strip().lower()
+            if len(norm_name) >= 3:
+                title = (soup.title.string or "").lower() if soup.title else ""
+                meta_og = soup.find("meta", attrs={"property": "og:site_name"})
+                site_name = (meta_og.get("content", "")).lower() if meta_og else ""
+
+                if norm_name in title or norm_name in site_name or norm_name in page_text.lower()[:3000]:
+                    return True, f"Verified company name match '{norm_name}' in page title or metadata"
+
+        # If domain was directly provided by official registry, allow with moderate confidence
+        return False, "Could not conclusively verify company identity on website content"
+
+    def _discover_subpages(self, soup: BeautifulSoup, base_url: str) -> dict[str, str]:
+        """Find relevant subpage links (about, careers, news) on the website."""
+        subpages: dict[str, str] = {}
+        parsed_base = urlparse(base_url)
+        base_origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
+
+        patterns = {
+            "careers": re.compile(r"/(karriere|careers|jobb|jobber|ledige-stillinger|stillinger)", re.I),
+            "news": re.compile(r"/(nyheter|news|presse|aktuelt|pressemeldinger)", re.I),
+            "about": re.compile(r"/(om-oss|om-selskapet|about|about-us)", re.I),
+        }
+
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            for key, pattern in patterns.items():
+                if key not in subpages and pattern.search(href):
+                    if href.startswith("/"):
+                        subpages[key] = f"{base_origin}{href}"
+                    elif href.startswith("http://") or href.startswith("https://"):
+                        if urlparse(href).netloc == parsed_base.netloc:
+                            subpages[key] = href
+
+        return subpages
+
+    def collect(
+        self,
+        raw_website_url: str | None,
+        expected_orgnr: str | None = None,
+        expected_name: str | None = None,
+        crawl_subpages: bool = True,
+    ) -> OnlinePresence:
         """Fetch and extract safe verified information from the official company website."""
         norm_url = self._normalize_url(raw_website_url)
         if not norm_url:
@@ -79,7 +147,7 @@ class WebsiteCollector:
 
         if not self.is_allowed_by_robots(norm_url):
             logger.info("Scraping %s disallowed by robots.txt", norm_url)
-            return OnlinePresence(website_url=norm_url, http_status=403)
+            return OnlinePresence(website_url=norm_url, http_status=403, is_identity_verified=False)
 
         try:
             resp = self.client.get(
@@ -88,9 +156,14 @@ class WebsiteCollector:
                 use_cache=True,
             )
             if resp.status_code != 200:
-                return OnlinePresence(website_url=norm_url, http_status=resp.status_code)
+                return OnlinePresence(website_url=norm_url, http_status=resp.status_code, is_identity_verified=False)
 
             soup = BeautifulSoup(resp.text, "html.parser")
+            page_text = soup.get_text()
+
+            # Verify identity
+            is_verified, reason = self._verify_website_identity(soup, page_text, expected_orgnr, expected_name)
+            logger.debug("Website identity check for %s: verified=%s (%s)", norm_url, is_verified, reason)
 
             # Remove executable / hidden elements
             for tag in soup(["script", "style", "noscript", "iframe", "svg"]):
@@ -129,6 +202,47 @@ class WebsiteCollector:
             if tel_tag:
                 phone = tel_tag.get("href", "").replace("tel:", "").strip()
 
+            active_jobs: list[dict[str, Any]] = []
+            announcements: list[dict[str, Any]] = []
+
+            # Discover and crawl bounded subpages if enabled
+            if crawl_subpages and is_verified:
+                subpages = self._discover_subpages(soup, norm_url)
+
+                # Careers / Jobs subpage
+                if "careers" in subpages:
+                    careers_url = subpages["careers"]
+                    try:
+                        c_resp = self.client.get(careers_url, use_cache=True)
+                        if c_resp.status_code == 200:
+                            c_soup = BeautifulSoup(c_resp.text, "html.parser")
+                            for a in c_soup.find_all("a", href=True)[:10]:
+                                text = a.get_text(strip=True)
+                                if len(text) > 8 and any(w in text.lower() for w in ["leder", "ingeniør", "utvikler", "konsulent", "stilling", "rådgiver", "manager", "developer", "engineer"]):
+                                    clean_job = sanitize_untrusted_web_content(text)
+                                    active_jobs.append({"title": clean_job, "url": careers_url})
+                                    if len(active_jobs) >= 5:
+                                        break
+                    except Exception:
+                        pass
+
+                # News / Announcements subpage
+                if "news" in subpages:
+                    news_url = subpages["news"]
+                    try:
+                        n_resp = self.client.get(news_url, use_cache=True)
+                        if n_resp.status_code == 200:
+                            n_soup = BeautifulSoup(n_resp.text, "html.parser")
+                            for h in n_soup.find_all(["h2", "h3"])[:5]:
+                                heading_text = h.get_text(strip=True)
+                                if len(heading_text) > 10:
+                                    clean_h = sanitize_untrusted_web_content(heading_text)
+                                    announcements.append({"headline": clean_h, "url": news_url})
+                                    if len(announcements) >= 3:
+                                        break
+                    except Exception:
+                        pass
+
             return OnlinePresence(
                 website_url=norm_url,
                 http_status=resp.status_code,
@@ -136,8 +250,11 @@ class WebsiteCollector:
                 business_summary=business_summary,
                 contact_email=sorted(emails)[0] if emails else None,
                 contact_phone=phone,
+                active_jobs=active_jobs,
+                announcements=announcements,
+                is_identity_verified=is_verified,
             )
 
         except Exception as e:
             logger.debug("Could not collect from website %s: %s", norm_url, e)
-            return OnlinePresence(website_url=norm_url, http_status=None)
+            return OnlinePresence(website_url=norm_url, http_status=None, is_identity_verified=False)

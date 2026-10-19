@@ -1,21 +1,26 @@
 """Signalpost — Norwegian Company Intelligence Agent.
 
-Main CLI interface supporting single-company research, 1,000+ dataset building,
-intelligent profile refresh, and competition evaluation benchmark.
+Main CLI interface supporting single-company research, streaming batch processing,
+1,000+ dataset building, intelligent profile refresh, competition evaluation benchmark,
+and 100-company pipeline smoke tests.
 """
 
 import argparse
 import json
 import logging
 import sys
+from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from src.collectors.registry import RegistryCollector
-from src.collectors.website import WebsiteCollector
 from src.config import settings
-from src.extraction.company_facts import extract_profile_from_sources
 from src.models.company import CompanyProfile
+from src.models.result import CompanyResultEnvelope
+from src.pipeline.research import (
+    load_input_identifiers,
+    process_batch,
+    research_company_pipeline,
+)
 from src.storage.repositories import company_repository
 from src.utils.rate_limiter import global_budget
 from src.validation.identity import parse_and_verify_orgnr, InvalidOrgnrError
@@ -29,49 +34,12 @@ console = Console()
 
 
 def research_company(orgnr_input: str, crawl_website: bool = True) -> CompanyProfile | None:
-    """End-to-end research workflow for a single Norwegian organization number."""
-    try:
-        clean_orgnr = parse_and_verify_orgnr(orgnr_input)
-    except InvalidOrgnrError as e:
-        logger.error("Validation failed: %s", e)
-        raise
+    """End-to-end research workflow for a single Norwegian organization number.
 
-    reg_collector = RegistryCollector()
-    web_collector = WebsiteCollector()
-
-    logger.info("Fetching Enhetsregisteret official registry data for %s...", clean_orgnr)
-    enhet = reg_collector.get_enhet(clean_orgnr)
-    if not enhet:
-        logger.warning("No registration record found for %s in Brønnøysundregistrene.", clean_orgnr)
-        return None
-
-    # Fetch roles (management & board)
-    logger.info("Fetching registered roles for %s...", clean_orgnr)
-    roller = reg_collector.get_roller(clean_orgnr)
-
-    # Fetch accounting / financial statements
-    logger.info("Fetching financial filings for %s...", clean_orgnr)
-    regnskap = reg_collector.get_regnskap(clean_orgnr)
-
-    # Crawl website if registered and permitted
-    online_data = None
-    website_url = enhet.get("hjemmeside")
-    if crawl_website and website_url:
-        logger.info("Collecting verified public info from website: %s", website_url)
-        online_data = web_collector.collect(website_url)
-
-    # Extract verified facts
-    profile = extract_profile_from_sources(
-        expected_orgnr=clean_orgnr,
-        enhet_data=enhet,
-        roller_data=roller,
-        regnskap_list=regnskap,
-        online_data=online_data,
-    )
-
-    # Save to SQLite database
-    company_repository.save_profile(profile)
-    return profile
+    Preserves full backward compatibility with tests and callers expecting a CompanyProfile.
+    """
+    envelope = research_company_pipeline(orgnr_input, crawl_website=crawl_website)
+    return envelope.company
 
 
 def display_profile_table(profile: CompanyProfile) -> None:
@@ -94,18 +62,32 @@ def main() -> None:
     parser.add_argument(
         "--orgnr",
         type=str,
-        help="Norwegian 9-digit company registration number to research",
+        help="Norwegian 9-digit company registration number (or comma-separated list) to research",
+    )
+    parser.add_argument(
+        "--input",
+        "--batch",
+        dest="input_batch",
+        type=str,
+        metavar="PATH",
+        help="Path to file containing company numbers to research (JSON, JSONL, CSV, or TXT)",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        metavar="PATH",
+        help="Export batch research results to JSON or JSONL file",
     )
     parser.add_argument(
         "--format",
-        choices=["json", "summary", "text"],
+        choices=["json", "envelope", "summary", "text"],
         default="json",
         help="Output format (default: json)",
     )
     parser.add_argument(
         "--no-website",
         action="store_true",
-        help="Skip crawling company website (registry only)",
+        help="Skip crawling company website (registry and local dataset only)",
     )
     parser.add_argument(
         "--build-dataset",
@@ -123,6 +105,11 @@ def main() -> None:
         "--evaluate",
         action="store_true",
         help="Run competition evaluation suite on 100 sample companies",
+    )
+    parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="Run official 100-company end-to-end pipeline smoke test",
     )
     parser.add_argument(
         "--status",
@@ -154,25 +141,85 @@ def main() -> None:
         console.print(f"[green]Exported {count} profiles to {args.export}[/green]")
         return
 
-    if args.orgnr:
-        try:
-            profile = research_company(args.orgnr, crawl_website=not args.no_website)
-            if not profile:
-                console.print(f"[red]Company '{args.orgnr}' not found.[/red]")
-                sys.exit(1)
+    if args.smoke_test:
+        from src.evaluation.metrics import run_100_company_smoke_test
 
-            if args.format == "json":
-                print(profile.model_dump_json(indent=2))
-            elif args.format == "summary":
-                display_profile_table(profile)
+        console.print("[bold yellow]Running Signalpost 100-Company Smoke Test...[/bold yellow]")
+        report = run_100_company_smoke_test()
+        console.print(f"[bold green]Smoke Test Status:[/bold green] {report['status']} ({report['total_results_returned']}/100 results)")
+        console.print(json.dumps(report, indent=2))
+        return
+
+    if args.evaluate:
+        from src.evaluation.metrics import run_evaluation_benchmark
+
+        console.print("[bold yellow]Running Signalpost Competition Evaluation Suite...[/bold yellow]")
+        report = run_evaluation_benchmark()
+        console.print(f"[bold green]Evaluation Score:[/bold green] {report['total_score']}/100.0")
+        console.print(json.dumps(report, indent=2))
+        return
+
+    # Batch file research
+    if args.input_batch:
+        identifiers = load_input_identifiers(args.input_batch)
+        console.print(f"[bold blue]Processing batch of {len(identifiers)} companies from {args.input_batch}...[/bold blue]")
+        envelopes = process_batch(identifiers, crawl_website=not args.no_website)
+
+        if args.output:
+            out_path = Path(args.output)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, "w", encoding="utf-8") as f:
+                if out_path.suffix.lower() == ".json":
+                    json.dump([e.model_dump(mode="json") for e in envelopes], f, indent=2)
+                else:
+                    for e in envelopes:
+                        f.write(e.model_dump_json() + "\n")
+            console.print(f"[bold green]Saved {len(envelopes)} results to {args.output}[/bold green]")
+        else:
+            if args.format == "json" or args.format == "envelope":
+                print(json.dumps([e.model_dump(mode="json") for e in envelopes], indent=2))
             else:
-                summary = profile.get_summary()
-                for k, v in summary.items():
-                    print(f"{k}: {v}")
+                for e in envelopes:
+                    status_indicator = "[green]AVAILABLE[/green]" if e.outcome.value == "available" else f"[yellow]{e.outcome.value.upper()}[/yellow]"
+                    console.print(f"{status_indicator} {e.organisation_number}: {e.name or 'N/A'}")
+        return
 
-        except InvalidOrgnrError as err:
-            console.print(f"[bold red]Validation Error:[/bold red] {err}")
-            sys.exit(2)
+    # Single or comma-separated orgnr research
+    if args.orgnr:
+        org_list = [x.strip() for x in args.orgnr.split(",") if x.strip()]
+        if len(org_list) > 1:
+            envelopes = process_batch(org_list, crawl_website=not args.no_website)
+            if args.output:
+                with open(args.output, "w", encoding="utf-8") as f:
+                    json.dump([e.model_dump(mode="json") for e in envelopes], f, indent=2)
+            print(json.dumps([e.model_dump(mode="json") for e in envelopes], indent=2))
+            return
+
+        target_org = org_list[0]
+        try:
+            envelope = research_company_pipeline(target_org, crawl_website=not args.no_website)
+
+            if args.output:
+                with open(args.output, "w", encoding="utf-8") as f:
+                    f.write(envelope.model_dump_json(indent=2))
+
+            if args.format == "json" or args.format == "envelope":
+                print(envelope.model_dump_json(indent=2))
+            elif args.format == "summary":
+                if envelope.company:
+                    display_profile_table(envelope.company)
+                else:
+                    console.print(f"[yellow]Status:[/yellow] {envelope.outcome.value}")
+                    console.print(f"[bold]{envelope.synthesis}[/bold]")
+            else:
+                if envelope.synthesis:
+                    print(envelope.synthesis)
+                elif envelope.company:
+                    for k, v in envelope.company.get_summary().items():
+                        print(f"{k}: {v}")
+                else:
+                    print(f"Outcome: {envelope.outcome.value}")
+
         except Exception as exc:
             logger.exception("Execution failed: %s", exc)
             sys.exit(1)
@@ -192,15 +239,6 @@ def main() -> None:
         diff = refresh_company_profile(args.refresh)
         console.print(f"[bold cyan]Refresh Results for {args.refresh}:[/bold cyan]")
         console.print(json.dumps(diff, indent=2))
-        return
-
-    if args.evaluate:
-        from src.evaluation.metrics import run_evaluation_benchmark
-
-        console.print("[bold yellow]Running Signalpost Competition Evaluation Suite...[/bold yellow]")
-        report = run_evaluation_benchmark()
-        console.print(f"[bold green]Evaluation Score:[/bold green] {report['total_score']}/100.0")
-        console.print(json.dumps(report, indent=2))
         return
 
     # If no flag provided, show help
