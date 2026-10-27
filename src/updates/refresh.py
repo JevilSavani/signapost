@@ -12,7 +12,7 @@ from src.collectors.website import WebsiteCollector
 from src.config import settings
 from src.extraction.company_facts import extract_profile_from_sources
 from src.models.company import CompanyProfile
-from src.models.evidence import FactChangeRecord, FactStatus
+from src.models.evidence import FactCategory, FactChangeRecord, FactStatus
 from src.storage.repositories import company_repository
 from src.utils.rate_limiter import global_budget
 from src.validation.identity import parse_and_verify_orgnr, validate_orgnr
@@ -21,7 +21,9 @@ logger = logging.getLogger(__name__)
 
 
 def detect_fact_changes(
-    old_profile: CompanyProfile, new_profile: CompanyProfile
+    old_profile: CompanyProfile,
+    new_profile: CompanyProfile,
+    preserve_missing_facts: bool = False,
 ) -> list[FactChangeRecord]:
     """Compare two profiles fact-by-fact and compute semantic change records.
 
@@ -51,14 +53,86 @@ def detect_fact_changes(
             )
         )
 
-    # Detect changed or unchanged facts
+    # Detect changed, conflicting, or unchanged facts
     for key in old_keys & new_keys:
         old_fact = old_profile.facts[key]
         new_fact = new_profile.facts[key]
 
         if old_fact.value != new_fact.value:
-            # Check for conflict vs update
-            # Official registry updates always supersede older registry values
+            # 1. Financial protection rules
+            if old_fact.category == FactCategory.FINANCIAL or key in (
+                "total_revenue", "operating_profit", "net_income", "total_assets", "total_equity", "is_audited"
+            ):
+                old_end = getattr(old_fact, "reporting_period_end", None) or ""
+                new_end = getattr(new_fact, "reporting_period_end", None) or ""
+                old_snip = getattr(old_fact, "evidence_snippet", "") or ""
+                new_snip = getattr(new_fact, "evidence_snippet", "") or ""
+
+                # Rule A: Never overwrite with older reporting period
+                if old_end and new_end and new_end < old_end:
+                    new_profile.facts[key] = old_fact
+                    changes.append(
+                        FactChangeRecord(
+                            fact_key=key,
+                            old_value=old_fact.value,
+                            new_value=new_fact.value,
+                            change_type=FactStatus.CONFLICTING,
+                            detected_at=now_utc,
+                            source_url=new_fact.source_url,
+                            explanation=(
+                                f"Rejected financial overwrite for '{key}': incoming filing period ({new_end}) "
+                                f"is older than verified period ({old_end}). Preserving verified figure."
+                            ),
+                        )
+                    )
+                    continue
+
+                # Rule B: Never overwrite group consolidated figures (KONSERN) with company parent-only (SELSKAP)
+                is_group = bool(
+                    getattr(new_profile, "is_part_of_group", False)
+                    or getattr(old_profile, "is_part_of_group", False)
+                )
+                if is_group and "KONSERN" in old_snip and "SELSKAP" in new_snip:
+                    new_profile.facts[key] = old_fact
+                    changes.append(
+                        FactChangeRecord(
+                            fact_key=key,
+                            old_value=old_fact.value,
+                            new_value=new_fact.value,
+                            change_type=FactStatus.CONFLICTING,
+                            detected_at=now_utc,
+                            source_url=new_fact.source_url,
+                            explanation=(
+                                f"Rejected financial overwrite for '{key}': incoming statement scope is parent-only (SELSKAP) "
+                                f"while company is part of a group with verified consolidated figures (KONSERN). Preserving verified figure."
+                            ),
+                        )
+                    )
+                    continue
+
+            # 2. Employee count verification rules
+            if key == "employee_count":
+                if old_fact.source_type == "official_registry" and new_fact.source_type not in (
+                    "official_registry", "official_financial_statement"
+                ):
+                    new_profile.facts[key] = old_fact
+                    changes.append(
+                        FactChangeRecord(
+                            fact_key=key,
+                            old_value=old_fact.value,
+                            new_value=new_fact.value,
+                            change_type=FactStatus.CONFLICTING,
+                            detected_at=now_utc,
+                            source_url=new_fact.source_url,
+                            explanation=(
+                                f"Rejected ungrounded employee count change: incoming source ({new_fact.source_type}) "
+                                f"lacks official registry authority compared to verified registry value ({old_fact.value}). Retaining verified count."
+                            ),
+                        )
+                    )
+                    continue
+
+            # Legitimate change
             change_type = FactStatus.CHANGED
             explanation = (
                 f"Fact '{key}' updated from '{old_fact.value}' to '{new_fact.value}' "
@@ -84,28 +158,55 @@ def detect_fact_changes(
                     change_type=FactStatus.UNCHANGED,
                     detected_at=now_utc,
                     source_url=new_fact.source_url,
-                    explanation=f"Fact '{key}' verified unchanged.",
+                    explanation=f"Fact '{key}' verified unchanged via {new_fact.source_url}.",
                 )
             )
 
-    # Detect facts unavailable in the new scrape
+    # Detect facts unavailable in the new scrape & preserve verified historical values
     for key in old_keys - new_keys:
         old_fact = old_profile.facts[key]
-        # Never assume company closed or deleted just because a website is temporarily down
+        if preserve_missing_facts:
+            new_profile.facts[key] = old_fact
+
+        # Check if source failed vs omitted
+        source_failed = False
+        if hasattr(new_profile, "sources_consulted") and new_profile.sources_consulted:
+            for sc in new_profile.sources_consulted:
+                sc_url = sc.get("url") if isinstance(sc, dict) else getattr(sc, "url", "")
+                sc_status = sc.get("status") if isinstance(sc, dict) else getattr(sc, "status", None)
+                if sc_url == old_fact.source_url:
+                    st_val = sc_status.value if hasattr(sc_status, "value") else str(sc_status)
+                    if st_val in ("failed", "blocked"):
+                        source_failed = True
+                        break
+
+        change_type = FactStatus.FAILED_REFRESH if source_failed else FactStatus.UNAVAILABLE
+        explanation = (
+            f"Source fetch failed for '{key}' ({old_fact.source_url}). Preserving prior verified value '{old_fact.value}'."
+            if source_failed
+            else f"Fact '{key}' was not observed in current fetch. Preserving prior verified value in historical audit trail."
+        )
+
         changes.append(
             FactChangeRecord(
                 fact_key=key,
                 old_value=old_fact.value,
                 new_value=None,
-                change_type=FactStatus.UNAVAILABLE,
+                change_type=change_type,
                 detected_at=now_utc,
                 source_url=old_fact.source_url,
-                explanation=(
-                    f"Fact '{key}' was not observed in current fetch. "
-                    "Preserving prior verified value in historical audit trail."
-                ),
+                explanation=explanation,
             )
         )
+
+    # Preserve top-level fields on new_profile if currently omitted and preservation requested
+    if preserve_missing_facts:
+        if old_profile.financials and not new_profile.financials:
+            new_profile.financials = old_profile.financials
+        if old_profile.employee_count is not None and new_profile.employee_count is None:
+            new_profile.employee_count = old_profile.employee_count
+        if old_profile.website and not new_profile.website:
+            new_profile.website = old_profile.website
 
     return changes
 
@@ -152,13 +253,9 @@ def refresh_company_profile(orgnr: str, crawl_website: bool = True) -> dict[str,
     if old_profile:
         # Preserve creation timestamp
         new_profile.created_at = old_profile.created_at
-        # Preserve prior verified facts if currently omitted by upstream source
-        for k, old_fact in old_profile.facts.items():
-            if k not in new_profile.facts:
-                new_profile.facts[k] = old_fact
 
-        # Compute change delta
-        changes = detect_fact_changes(old_profile, new_profile)
+        # Compute change delta and preserve prior facts
+        changes = detect_fact_changes(old_profile, new_profile, preserve_missing_facts=True)
         # Combine existing history with new changes
         new_profile.change_history = old_profile.change_history + [
             c for c in changes if c.change_type != FactStatus.UNCHANGED

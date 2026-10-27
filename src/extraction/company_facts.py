@@ -14,6 +14,7 @@ from src.models.company import (
 )
 from src.models.evidence import FactCategory, ProvenanceFact
 from src.validation.identity import parse_and_verify_orgnr
+from src.validation.ownership import is_credible_business_description
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,9 @@ def build_address(addr_data: dict[str, Any] | None) -> Address | None:
 
 
 def select_latest_valid_filing(
-    regnskap_list: list[dict[str, Any]] | None, expected_orgnr: str
+    regnskap_list: list[dict[str, Any]] | None,
+    expected_orgnr: str,
+    is_part_of_group: bool | None = None,
 ) -> dict[str, Any] | None:
     """Select the most recent valid financial statement from Regnskapsregisteret.
 
@@ -43,9 +46,10 @@ def select_latest_valid_filing(
     - Verifies that virksomhet.organisasjonsnummer strictly matches expected_orgnr.
     - Validates regnskapsperiode: fraDato and tilDato must be present, 10-char ISO dates,
       and fraDato <= tilDato. Suspicious/inverted dates are rejected.
+    - Filters records to require at least one parseable financial figure.
     - Sorts records to identify the latest reporting period (maximum tilDato).
-    - If both consolidated (KONSERN) and parent (SELSKAP) accounts exist for the same period,
-      prefers KONSERN as it captures the group's full operations, while preserving statement_type.
+    - If both consolidated (KONSERN) and parent (SELSKAP) accounts exist for the same period:
+      prefers KONSERN for groups/morselskap; prefers SELSKAP for independent entities.
     - Excludes liquidation accounts (avviklingsregnskap) if normal filings exist.
     """
     if not regnskap_list:
@@ -82,21 +86,40 @@ def select_latest_valid_filing(
             )
             continue
 
-        valid_records.append(r)
+        # 3. Require at least one financial figure to avoid empty/metadata-only shells
+        resultat = r.get("resultatregnskapResultat") or {}
+        driftsresultat = resultat.get("driftsresultat") or {}
+        driftsinntekter = driftsresultat.get("driftsinntekter") or {}
+        eiendeler = r.get("eiendeler") or {}
+        egenkapital_gjeld = r.get("egenkapitalGjeld") or {}
+        has_figures = 1 if (
+            driftsinntekter.get("sumDriftsinntekter") is not None
+            or driftsinntekter.get("salgsinntekter") is not None
+            or driftsresultat.get("driftsresultat") is not None
+            or resultat.get("aarsresultat") is not None
+            or eiendeler.get("sumEiendeler") is not None
+            or egenkapital_gjeld.get("sumEgenkapitalGjeld") is not None
+            or (egenkapital_gjeld.get("egenkapital") or {}).get("sumEgenkapital") is not None
+        ) else 0
+
+        valid_records.append((r, has_figures))
 
     if not valid_records:
         return None
 
-    # Sort descending: latest tilDato first, then KONSERN before SELSKAP, then non-avvikling
-    valid_records.sort(
-        key=lambda x: (
-            str(x.get("regnskapsperiode", {}).get("tilDato", "")),
-            1 if str(x.get("regnskapstype", "")).upper() == "KONSERN" else 0,
-            0 if x.get("avviklingsregnskap") else 1,
-        ),
-        reverse=True,
-    )
-    return valid_records[0]
+    # Determine corporate group scope preference
+    def sort_key(item: tuple[dict[str, Any], int]) -> tuple[str, int, int, int]:
+        x, has_figs = item
+        til_dato = str(x.get("regnskapsperiode", {}).get("tilDato", ""))
+        is_konsern = str(x.get("regnskapstype", "")).upper() == "KONSERN"
+        morselskap = bool(x.get("virksomhet", {}).get("morselskap", False))
+        prefers_konsern = (is_part_of_group is not False) or morselskap
+        scope_score = 1 if (is_konsern if prefers_konsern else not is_konsern) else 0
+        non_avvikling = 0 if x.get("avviklingsregnskap") else 1
+        return (til_dato, scope_score, has_figs, non_avvikling)
+
+    valid_records.sort(key=sort_key, reverse=True)
+    return valid_records[0][0]
 
 
 def extract_profile_from_sources(
@@ -265,6 +288,8 @@ def extract_profile_from_sources(
     emp_count = enhet_data.get("antallAnsatte")
     has_emp = enhet_data.get("harRegistrertAntallAnsatte")
     if emp_count is not None:
+        reg_date_emp = enhet_data.get("registreringsdatoAntallAnsatteEnhetsregisteret")
+        date_snippet = f", registered {reg_date_emp}" if reg_date_emp else ""
         facts["employee_count"] = ProvenanceFact(
             fact_key="employee_count",
             category=FactCategory.OPERATIONAL,
@@ -274,10 +299,10 @@ def extract_profile_from_sources(
             source_title="Brønnøysundregistrene Enhetsregisteret",
             associated_orgnr=clean_orgnr,
             retrieval_timestamp=now_utc,
-            publication_date=enhet_data.get("registreringsdatoAntallAnsatteEnhetsregisteret"),
+            publication_date=reg_date_emp,
             confidence=1.0,
             is_independently_confirmed=True,
-            evidence_snippet=f"antallAnsatte: {emp_count}",
+            evidence_snippet=f"antallAnsatte: {emp_count} (NAV Aa-registeret legal entity count{date_snippet})",
         )
 
     is_vat = enhet_data.get("registrertIMvaregisteret")
@@ -427,20 +452,61 @@ def extract_profile_from_sources(
     # 3. Financial Statements from Regnskap
     financials: CompanyFinancials | None = None
     if regnskap_list and len(regnskap_list) > 0:
-        latest = select_latest_valid_filing(regnskap_list, clean_orgnr)
+        latest = select_latest_valid_filing(
+            regnskap_list,
+            clean_orgnr,
+            is_part_of_group=enhet_data.get("erIKonsern") if enhet_data else None,
+        )
         if latest:
             regnskap_url = f"https://data.brreg.no/regnskapsregisteret/regnskap/{clean_orgnr}"
             period = latest.get("regnskapsperiode", {})
             start_date = period.get("fraDato")
             end_date = period.get("tilDato")
 
-            # Currency: strictly from source without guessing or converting
+            # Currency: strictly from source filing metadata; never default, guess, convert, or infer from magnitude
             raw_currency = latest.get("valuta")
-            currency = str(raw_currency).strip().upper() if raw_currency else "NOK"
+            currency: str | None = None
+            if raw_currency:
+                cand_curr = str(raw_currency).strip().upper()
+                if cand_curr and cand_curr not in ("NONE", "NULL", "UNKNOWN"):
+                    currency = cand_curr
 
             statement_type = str(latest.get("regnskapstype", "SELSKAP")).strip().upper()
             journal_nr = latest.get("journalnr")
-            is_audited = not latest.get("revisjon", {}).get("ikkeRevidertAarsregnskap", False)
+
+            # Audit status: strictly verify from filing explicit revision fields;
+            # never infer from existence of financial statements or listed auditor
+            revisjon_data = latest.get("revisjon")
+            is_audited: bool | None = None
+            if isinstance(revisjon_data, dict) and revisjon_data:
+                ikke_revidert = revisjon_data.get("ikkeRevidertAarsregnskap")
+                fravalg = revisjon_data.get("fravalgRevisjon")
+                ikke_utfoert = revisjon_data.get("revisjonIkkeUtfoert")
+                beretning = revisjon_data.get("revisjonsberetningForeligger")
+
+                audited_signals = []
+                if ikke_revidert is False:
+                    audited_signals.append("ikkeRevidertAarsregnskap=False")
+                if beretning is True:
+                    audited_signals.append("revisjonsberetningForeligger=True")
+
+                unaudited_signals = []
+                if ikke_revidert is True:
+                    unaudited_signals.append("ikkeRevidertAarsregnskap=True")
+                if fravalg is True:
+                    unaudited_signals.append("fravalgRevisjon=True")
+                if ikke_utfoert is True:
+                    unaudited_signals.append("revisjonIkkeUtfoert=True")
+
+                if audited_signals and unaudited_signals:
+                    # Contradictory evidence in filing -> treat as ambiguous/unknown
+                    is_audited = None
+                elif audited_signals:
+                    is_audited = True
+                elif unaudited_signals:
+                    is_audited = False
+                else:
+                    is_audited = None
 
             # Revenue & Profits
             resultat = latest.get("resultatregnskapResultat", {})
@@ -501,6 +567,7 @@ def extract_profile_from_sources(
                 period_start=start_date,
                 period_end=end_date,
                 currency=currency,
+                currency_units="exact",
                 total_revenue=revenue,
                 operating_profit=operating_profit,
                 net_income=net_income,
@@ -510,6 +577,9 @@ def extract_profile_from_sources(
                 statement_type=statement_type,
                 journal_number=journal_nr,
             )
+
+            curr_tag = f" {currency}" if currency else " (currency unrecorded)"
+            unit_tag = "units: base currency units (exact nominal amount)"
 
             if revenue is not None:
                 facts["total_revenue"] = ProvenanceFact(
@@ -526,8 +596,8 @@ def extract_profile_from_sources(
                     confidence=1.0,
                     is_independently_confirmed=True,
                     evidence_snippet=(
-                        f"{revenue_key}: {revenue} {currency} "
-                        f"(Period: {start_date} to {end_date}, Type: {statement_type})"
+                        f"{revenue_key}: {revenue}{curr_tag} "
+                        f"(Period: {start_date} to {end_date}, Type: {statement_type}, {unit_tag})"
                     ),
                 )
 
@@ -546,8 +616,8 @@ def extract_profile_from_sources(
                     confidence=1.0,
                     is_independently_confirmed=True,
                     evidence_snippet=(
-                        f"driftsresultat: {operating_profit} {currency} "
-                        f"(Period: {start_date} to {end_date}, Type: {statement_type})"
+                        f"driftsresultat: {operating_profit}{curr_tag} "
+                        f"(Period: {start_date} to {end_date}, Type: {statement_type}, {unit_tag})"
                     ),
                 )
 
@@ -566,8 +636,8 @@ def extract_profile_from_sources(
                     confidence=1.0,
                     is_independently_confirmed=True,
                     evidence_snippet=(
-                        f"aarsresultat: {net_income} {currency} "
-                        f"(Period: {start_date} to {end_date}, Type: {statement_type})"
+                        f"aarsresultat: {net_income}{curr_tag} "
+                        f"(Period: {start_date} to {end_date}, Type: {statement_type}, {unit_tag})"
                     ),
                 )
 
@@ -586,8 +656,8 @@ def extract_profile_from_sources(
                     confidence=1.0,
                     is_independently_confirmed=True,
                     evidence_snippet=(
-                        f"sumEiendeler: {assets} {currency} "
-                        f"(Period: {start_date} to {end_date}, Type: {statement_type})"
+                        f"sumEiendeler: {assets}{curr_tag} "
+                        f"(Period: {start_date} to {end_date}, Type: {statement_type}, {unit_tag})"
                     ),
                 )
 
@@ -606,8 +676,28 @@ def extract_profile_from_sources(
                     confidence=1.0,
                     is_independently_confirmed=True,
                     evidence_snippet=(
-                        f"sumEgenkapital: {equity} {currency} "
-                        f"(Period: {start_date} to {end_date}, Type: {statement_type})"
+                        f"sumEgenkapital: {equity}{curr_tag} "
+                        f"(Period: {start_date} to {end_date}, Type: {statement_type}, {unit_tag})"
+                    ),
+                )
+
+            if is_audited is not None:
+                facts["is_audited"] = ProvenanceFact(
+                    fact_key="is_audited",
+                    category=FactCategory.FINANCIAL,
+                    value=is_audited,
+                    source_url=regnskap_url,
+                    source_type="official_financial_statement",
+                    source_title="Brønnøysundregistrene Regnskapsregisteret",
+                    associated_orgnr=clean_orgnr,
+                    retrieval_timestamp=now_utc,
+                    reporting_period_start=start_date,
+                    reporting_period_end=end_date,
+                    confidence=1.0,
+                    is_independently_confirmed=True,
+                    evidence_snippet=(
+                        f"Filing revisjon metadata: {json.dumps(revisjon_data)} "
+                        f"(Statement: {statement_type}, Journal: {journal_nr})"
                     ),
                 )
 
@@ -643,10 +733,12 @@ def extract_profile_from_sources(
             )
 
     # 5. Online Presence facts (only if verified)
-    if online_data and online_data.website_url:
-        web_url = online_data.website_url
+    verified_website = None
+    if online_data:
         if online_data.is_identity_verified:
-            if online_data.meta_description:
+            verified_website = online_data.website_url
+            web_url = online_data.website_url
+            if online_data.meta_description and is_credible_business_description(online_data.meta_description):
                 facts["meta_description"] = ProvenanceFact(
                     fact_key="meta_description",
                     category=FactCategory.ONLINE,
@@ -690,6 +782,7 @@ def extract_profile_from_sources(
                         is_independently_confirmed=True,
                         evidence_snippet=f"Active listings: {', '.join(job_titles[:3])}",
                     )
+            verified_news_source = getattr(online_data, "crawled_news_url", None) or web_url
             if online_data.announcements:
                 headlines = [a.get("headline") for a in online_data.announcements if a.get("headline")]
                 if headlines:
@@ -697,7 +790,7 @@ def extract_profile_from_sources(
                         fact_key="public_announcements",
                         category=FactCategory.OPERATIONAL,
                         value=headlines,
-                        source_url=online_data.announcements[0].get("url", web_url),
+                        source_url=verified_news_source,
                         source_type="verified_website",
                         source_title="Company Announcements",
                         associated_orgnr=clean_orgnr,
@@ -706,6 +799,57 @@ def extract_profile_from_sources(
                         is_independently_confirmed=True,
                         evidence_snippet=f"Announcements: {', '.join(headlines[:2])}",
                     )
+
+            # Verified social media profiles
+            verified_socials = [s for s in getattr(online_data, "social_links", []) if s.get("is_verified")]
+            if verified_socials:
+                facts["social_media"] = ProvenanceFact(
+                    fact_key="social_media",
+                    category=FactCategory.ONLINE,
+                    value=[{"platform": s["platform"], "url": s["url"], "handle": s.get("handle")} for s in verified_socials],
+                    source_url=web_url,
+                    source_type="verified_website",
+                    source_title="Verified Social Profiles",
+                    associated_orgnr=clean_orgnr,
+                    retrieval_timestamp=now_utc,
+                    confidence=0.85,
+                    is_independently_confirmed=True,
+                    evidence_snippet=f"Verified social profiles: {', '.join(s['platform'] for s in verified_socials)}",
+                )
+
+            # Verified news and dated articles
+            verified_news = [n for n in getattr(online_data, "news_items", []) if n.get("is_verified")]
+            if verified_news:
+                facts["news_articles"] = ProvenanceFact(
+                    fact_key="news_articles",
+                    category=FactCategory.OPERATIONAL,
+                    value=[
+                        {
+                            "title": n["title"],
+                            "url": n.get("canonical_url") or n["url"],
+                            "date": n.get("publication_date"),
+                            "evidence": n.get("company_relevance_evidence") or f"Published on {n.get('publication_date')}",
+                        }
+                        for n in verified_news
+                    ],
+                    source_url=verified_news_source,
+                    source_type="verified_website",
+                    source_title="Verified News Articles",
+                    associated_orgnr=clean_orgnr,
+                    retrieval_timestamp=now_utc,
+                    publication_date=verified_news[0].get("publication_date"),
+                    confidence=0.85,
+                    is_independently_confirmed=True,
+                    evidence_snippet=f"Verified articles: {', '.join(n['title'] for n in verified_news[:2])}",
+                )
+        else:
+            # Candidate website failed identity/ownership verification (e.g. parent-group or third-party)
+            if "official_website" in facts:
+                del facts["official_website"]
+            verified_website = None
+    else:
+        # Website not crawled; retain registry declaration
+        verified_website = website
 
     # Extract share capital
     kapital_raw = enhet_data.get("kapital")
@@ -805,11 +949,19 @@ def extract_profile_from_sources(
         operating_locations=operating_locations,
         statutory_purpose=statutory_purpose,
         business_description=(
-            online_data.business_summary or online_data.meta_description if online_data and online_data.is_identity_verified else None
-        ) or statutory_purpose,
-        website=website or (online_data.website_url if online_data and online_data.is_identity_verified else None),
+            online_data.meta_description
+            if (online_data and online_data.is_identity_verified and online_data.meta_description and is_credible_business_description(online_data.meta_description))
+            else (
+                online_data.business_summary
+                if (online_data and online_data.is_identity_verified and online_data.business_summary and is_credible_business_description(online_data.business_summary))
+                else None
+            )
+        ),
+        website=verified_website,
         phone=enhet_data.get("telefon") or (online_data.contact_phone if online_data and online_data.is_identity_verified else None),
         email=online_data.contact_email if online_data and online_data.is_identity_verified else None,
+        social_links=online_data.social_links if online_data else [],
+        news_items=online_data.news_items if online_data else [],
         is_part_of_group=enhet_data.get("erIKonsern"),
         share_capital=share_capital,
         officers=officers,

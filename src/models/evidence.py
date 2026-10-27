@@ -35,6 +35,7 @@ class FactStatus(str, Enum):
     CONFLICTING = "CONFLICTING"
     STALE = "STALE"
     UNAVAILABLE = "UNAVAILABLE"
+    FAILED_REFRESH = "FAILED_REFRESH"
 
 
 class ProvenanceFact(BaseModel):

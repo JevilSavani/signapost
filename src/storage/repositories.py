@@ -92,7 +92,7 @@ class CompanyRepository:
                         orgnr,
                         fact.fact_key,
                         fact.category.value,
-                        json.dumps(fact.value),
+                        json.dumps(fact.value, ensure_ascii=False),
                         fact.source_url,
                         fact.source_type,
                         fact.confidence,
@@ -104,11 +104,11 @@ class CompanyRepository:
                     ),
                 )
 
-            # 3. Insert change history records
+            # 3. Insert change history records (ignore existing identical entries)
             for change in profile.change_history:
                 cursor.execute(
                     """
-                    INSERT INTO audit_log (
+                    INSERT OR IGNORE INTO audit_log (
                         orgnr, fact_key, old_value_json, new_value_json, change_type,
                         source_url, explanation, detected_at
                     )
@@ -117,8 +117,8 @@ class CompanyRepository:
                     (
                         orgnr,
                         change.fact_key,
-                        json.dumps(change.old_value),
-                        json.dumps(change.new_value),
+                        json.dumps(change.old_value, ensure_ascii=False),
+                        json.dumps(change.new_value, ensure_ascii=False),
                         change.change_type.value,
                         change.source_url,
                         change.explanation,
@@ -163,7 +163,7 @@ class CompanyRepository:
         with get_db_connection(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO audit_log (
+                INSERT OR IGNORE INTO audit_log (
                     orgnr, fact_key, old_value_json, new_value_json, change_type,
                     source_url, explanation, detected_at
                 )
@@ -172,8 +172,8 @@ class CompanyRepository:
                 (
                     orgnr,
                     record.fact_key,
-                    json.dumps(record.old_value),
-                    json.dumps(record.new_value),
+                    json.dumps(record.old_value, ensure_ascii=False),
+                    json.dumps(record.new_value, ensure_ascii=False),
                     record.change_type.value,
                     record.source_url,
                     record.explanation,

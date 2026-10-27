@@ -14,9 +14,9 @@ def test_financial_statement_adapter_facts_extracted_reconciliation():
     """Verify that financial statement adapter counts only genuinely parsed facts."""
     mock_reg = MagicMock()
     mock_reg.get_enhet.return_value = {
-        "organisasjonsnummer": "923609016",
-        "navn": "EQUINOR ASA",
-        "organisasjonsform": {"kode": "ASA", "beskrivelse": "Allment aksjeselskap"},
+        "organisasjonsnummer": "999999999",
+        "navn": "MOCK ENHET AS",
+        "organisasjonsform": {"kode": "AS", "beskrivelse": "Aksjeselskap"},
         "konkurs": False,
         "underAvvikling": False,
     }
@@ -24,7 +24,7 @@ def test_financial_statement_adapter_facts_extracted_reconciliation():
     mock_reg.get_regnskap.return_value = [
         {
             "regnskapstype": "SELSKAP",
-            "virksomhet": {"organisasjonsnummer": "923609016"},
+            "virksomhet": {"organisasjonsnummer": "999999999"},
             "regnskapsperiode": {"fraDato": "2023-01-01", "tilDato": "2023-12-31"},
             "valuta": "NOK",
             "resultatregnskapResultat": {
@@ -44,7 +44,7 @@ def test_financial_statement_adapter_facts_extracted_reconciliation():
     mock_web.collect.return_value = OnlinePresence(http_status=404)
 
     envelope = research_company_pipeline(
-        "923609016",
+        "999999999",
         crawl_website=False,
         reg_collector=mock_reg,
         web_collector=mock_web,
@@ -66,9 +66,9 @@ def test_financial_statement_empty_filing_reports_not_available_and_zero_facts()
     """Verify that an HTTP 200 response with no parseable figures reports NOT_AVAILABLE with 0 facts."""
     mock_reg = MagicMock()
     mock_reg.get_enhet.return_value = {
-        "organisasjonsnummer": "923609016",
-        "navn": "EQUINOR ASA",
-        "organisasjonsform": {"kode": "ASA", "beskrivelse": "Allment aksjeselskap"},
+        "organisasjonsnummer": "999999999",
+        "navn": "MOCK ENHET AS",
+        "organisasjonsform": {"kode": "AS", "beskrivelse": "Aksjeselskap"},
         "konkurs": False,
         "underAvvikling": False,
     }
@@ -77,7 +77,7 @@ def test_financial_statement_empty_filing_reports_not_available_and_zero_facts()
     mock_reg.get_underenheter.return_value = []
 
     envelope = research_company_pipeline(
-        "923609016",
+        "999999999",
         crawl_website=False,
         reg_collector=mock_reg,
         use_dataset=False,
@@ -169,13 +169,13 @@ def test_sources_consulted_extraction_counts_strictly_match_facts():
     """Verify that for every source in sources_consulted, facts_extracted equals matching facts in profile.facts."""
     mock_reg = MagicMock()
     mock_reg.get_enhet.return_value = {
-        "organisasjonsnummer": "923609016",
-        "navn": "EQUINOR ASA",
-        "organisasjonsform": {"kode": "ASA", "beskrivelse": "Allment aksjeselskap"},
+        "organisasjonsnummer": "999999999",
+        "navn": "MOCK ENHET AS",
+        "organisasjonsform": {"kode": "AS", "beskrivelse": "Aksjeselskap"},
         "konkurs": False,
         "underAvvikling": False,
         "antallAnsatte": 500,
-        "hjemmeside": "www.equinor.com",
+        "hjemmeside": "www.mockenhet.no",
     }
     mock_reg.get_roller.return_value = {
         "rollegrupper": [
@@ -184,7 +184,7 @@ def test_sources_consulted_extraction_counts_strictly_match_facts():
                 "roller": [
                     {
                         "type": {"kode": "DAGL", "beskrivelse": "Daglig leder"},
-                        "person": {"navn": {"fornavn": "Anders", "etternavn": "Opedal"}},
+                        "person": {"navn": {"fornavn": "Test", "etternavn": "Leder"}},
                     }
                 ],
             }
@@ -194,7 +194,7 @@ def test_sources_consulted_extraction_counts_strictly_match_facts():
     mock_reg.get_underenheter.return_value = []
 
     envelope = research_company_pipeline(
-        "923609016",
+        "999999999",
         crawl_website=False,
         reg_collector=mock_reg,
         use_dataset=False,

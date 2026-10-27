@@ -89,5 +89,8 @@ def init_database(db_path: Path | str | None = None) -> None:
         )
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_orgnr ON audit_log(orgnr);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_detected ON audit_log(detected_at);")
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_unique ON audit_log(orgnr, fact_key, detected_at, change_type);"
+        )
 
         conn.commit()

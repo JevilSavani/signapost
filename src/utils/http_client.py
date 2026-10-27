@@ -113,13 +113,20 @@ class CachedHttpClient:
             cached = self._get_cache(full_url)
             if cached and cached["status_code"] in (200, 404):
                 global_budget.record_cache_hit()
-                # Synthesize httpx.Response from cache
-                return httpx.Response(
+                cached_headers = {
+                    k: v
+                    for k, v in cached["headers"].items()
+                    if k.lower() not in ("content-encoding", "content-length")
+                }
+                # Synthesize httpx.Response from cache preserving UTF-8
+                resp = httpx.Response(
                     status_code=cached["status_code"],
-                    headers=cached["headers"],
-                    text=cached["body"],
+                    headers=cached_headers,
+                    content=cached["body"].encode("utf-8"),
                     request=req,
                 )
+                resp.encoding = "utf-8"
+                return resp
 
         # Enforce budget limits before making an outbound network request
         global_budget.check_budget_or_raise()
@@ -139,6 +146,17 @@ class CachedHttpClient:
                     time.sleep(backoff)
                     backoff *= 2.0
                     continue
+
+                # Ensure UTF-8 is preserved end-to-end for JSON, APIs, and UTF-8 payloads
+                content_type = response.headers.get("content-type", "").lower()
+                if "json" in content_type or "api" in full_url:
+                    response.encoding = "utf-8"
+                elif response.encoding in ("iso-8859-1", "ascii", None):
+                    try:
+                        response.content.decode("utf-8")
+                        response.encoding = "utf-8"
+                    except (UnicodeDecodeError, AttributeError):
+                        pass
 
                 if use_cache and response.status_code in (200, 404):
                     self._set_cache(

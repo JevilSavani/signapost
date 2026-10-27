@@ -8,10 +8,18 @@ and 100-company pipeline smoke tests.
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
+
+if sys.version_info >= (3, 7):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 from src.config import settings
 from src.models.company import CompanyProfile
@@ -65,24 +73,31 @@ def main() -> None:
         help="Norwegian 9-digit company registration number (or comma-separated list) to research",
     )
     parser.add_argument(
-        "--input",
         "--batch",
+        "--input",
         dest="input_batch",
         type=str,
         metavar="PATH",
-        help="Path to file containing company numbers to research (JSON, JSONL, CSV, or TXT)",
+        help="Path to file containing company numbers to research (one orgnr per line TXT, JSON, JSONL, or CSV)",
     )
     parser.add_argument(
         "--output",
         type=str,
         metavar="PATH",
-        help="Export batch research results to JSON or JSONL file",
+        help="Destination path for research results (JSON Lines .jsonl or JSON .json format)",
     )
     parser.add_argument(
         "--format",
-        choices=["json", "envelope", "summary", "text"],
+        choices=["json", "jsonl", "envelope", "summary", "text"],
         default="json",
         help="Output format (default: json)",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=3,
+        metavar="WORKERS",
+        help="Bounded concurrent worker threads for batch processing (default: 3, max: 10)",
     )
     parser.add_argument(
         "--no-website",
@@ -161,27 +176,53 @@ def main() -> None:
 
     # Batch file research
     if args.input_batch:
-        identifiers = load_input_identifiers(args.input_batch)
-        console.print(f"[bold blue]Processing batch of {len(identifiers)} companies from {args.input_batch}...[/bold blue]")
-        envelopes = process_batch(identifiers, crawl_website=not args.no_website)
+        try:
+            identifiers = load_input_identifiers(args.input_batch)
+        except Exception as exc:
+            sys.stderr.write(f"Error: Failed to read batch input file '{args.input_batch}': {exc}\n")
+            sys.exit(1)
+
+        workers = max(1, min(args.concurrency, 10))
+        envelopes = process_batch(
+            identifiers,
+            crawl_website=not args.no_website,
+            max_workers=workers,
+        )
 
         if args.output:
             out_path = Path(args.output)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(out_path, "w", encoding="utf-8") as f:
-                if out_path.suffix.lower() == ".json":
-                    json.dump([e.model_dump(mode="json") for e in envelopes], f, indent=2)
-                else:
-                    for e in envelopes:
-                        f.write(e.model_dump_json() + "\n")
-            console.print(f"[bold green]Saved {len(envelopes)} results to {args.output}[/bold green]")
+            tmp_path = None
+            try:
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = out_path.with_name(f".{out_path.name}.tmp_{os.getpid()}")
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    if out_path.suffix.lower() == ".json":
+                        json.dump([e.model_dump(mode="json") for e in envelopes], f, indent=2, ensure_ascii=False)
+                    else:
+                        for e in envelopes:
+                            f.write(e.model_dump_json() + "\n")
+                # Atomic replacement
+                tmp_path.replace(out_path)
+            except Exception as write_err:
+                if tmp_path and tmp_path.exists():
+                    tmp_path.unlink(missing_ok=True)
+                sys.stderr.write(f"Error: Failed to write output file '{args.output}': {write_err}\n")
+                sys.exit(1)
+
+            sys.stderr.write(f"Batch completed: Saved {len(envelopes)} results to {args.output}\n")
         else:
             if args.format == "json" or args.format == "envelope":
-                print(json.dumps([e.model_dump(mode="json") for e in envelopes], indent=2))
-            else:
+                print(json.dumps([e.model_dump(mode="json") for e in envelopes], indent=2, ensure_ascii=False))
+            elif args.format == "jsonl":
+                for e in envelopes:
+                    print(e.model_dump_json())
+            elif args.format == "summary" or args.format == "text":
                 for e in envelopes:
                     status_indicator = "[green]AVAILABLE[/green]" if e.outcome.value == "available" else f"[yellow]{e.outcome.value.upper()}[/yellow]"
                     console.print(f"{status_indicator} {e.organisation_number}: {e.name or 'N/A'}")
+            else:
+                for e in envelopes:
+                    print(e.model_dump_json())
         return
 
     # Single or comma-separated orgnr research
@@ -191,8 +232,8 @@ def main() -> None:
             envelopes = process_batch(org_list, crawl_website=not args.no_website)
             if args.output:
                 with open(args.output, "w", encoding="utf-8") as f:
-                    json.dump([e.model_dump(mode="json") for e in envelopes], f, indent=2)
-            print(json.dumps([e.model_dump(mode="json") for e in envelopes], indent=2))
+                    json.dump([e.model_dump(mode="json") for e in envelopes], f, indent=2, ensure_ascii=False)
+            print(json.dumps([e.model_dump(mode="json") for e in envelopes], indent=2, ensure_ascii=False))
             return
 
         target_org = org_list[0]

@@ -38,7 +38,8 @@ class CompanyFinancials(BaseModel):
     reporting_year: int | None = None
     period_start: str | None = None
     period_end: str | None = None
-    currency: str = "NOK"
+    currency: str | None = None
+    currency_units: str | None = "exact"
     total_revenue: float | None = None
     operating_profit: float | None = None
     net_income: float | None = None
@@ -60,7 +61,14 @@ class OnlinePresence(BaseModel):
     contact_phone: str | None = None
     active_jobs: list[dict[str, Any]] = Field(default_factory=list)
     announcements: list[dict[str, Any]] = Field(default_factory=list)
+    news_items: list[dict[str, Any]] = Field(default_factory=list)
+    social_links: list[dict[str, Any]] = Field(default_factory=list)
+    ownership_status: str = "unverified"
+    ownership_reasoning: str | None = None
+    declared_orgnr: str | None = None
     is_identity_verified: bool = False
+    crawled_news_url: str | None = None
+    crawled_subpages: dict[str, str] = Field(default_factory=dict)
 
 
 class CompanyProfile(BaseModel):
@@ -100,6 +108,8 @@ class CompanyProfile(BaseModel):
     website: str | None = None
     phone: str | None = None
     email: str | None = None
+    social_links: list[dict[str, Any]] = Field(default_factory=list)
+    news_items: list[dict[str, Any]] = Field(default_factory=list)
 
     is_part_of_group: bool | None = None
     share_capital: float | None = None

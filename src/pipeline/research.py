@@ -28,7 +28,16 @@ def load_input_identifiers(input_source: str | Path) -> list[str]:
     source_str = str(input_source).strip()
     path = Path(source_str)
 
+    looks_like_file = (
+        isinstance(input_source, Path)
+        or "/" in source_str
+        or "\\" in source_str
+        or path.suffix.lower() in (".txt", ".json", ".jsonl", ".csv")
+    )
+
     if not path.is_file():
+        if looks_like_file:
+            raise FileNotFoundError(f"Batch input file not found: {source_str}")
         # Treat as comma-separated or newline-separated string
         raw_items = [x.strip() for x in source_str.replace("\n", ",").split(",") if x.strip()]
         return raw_items
@@ -37,18 +46,20 @@ def load_input_identifiers(input_source: str | Path) -> list[str]:
     suffix = path.suffix.lower()
 
     if suffix == ".json":
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
             if isinstance(data, list):
                 for item in data:
                     if isinstance(item, str):
-                        identifiers.append(item.strip())
+                        s = item.strip()
+                        if s:
+                            identifiers.append(s)
                     elif isinstance(item, dict):
                         org = item.get("organisation_number") or item.get("orgnr") or item.get("id")
                         if org:
                             identifiers.append(str(org).strip())
     elif suffix == ".jsonl":
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             for line in f:
                 s = line.strip()
                 if not s:
@@ -64,7 +75,7 @@ def load_input_identifiers(input_source: str | Path) -> list[str]:
                 except Exception:
                     identifiers.append(s)
     elif suffix == ".csv":
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             reader = csv.reader(f)
             header = next(reader, None)
             col_idx = 0
@@ -80,8 +91,8 @@ def load_input_identifiers(input_source: str | Path) -> list[str]:
                     if val:
                         identifiers.append(val)
     else:
-        # Default: plaintext one identifier per line
-        with open(path, "r", encoding="utf-8") as f:
+        # Default: plaintext one identifier per line (UTF-8 with or without BOM)
+        with open(path, "r", encoding="utf-8-sig") as f:
             for line in f:
                 val = line.strip()
                 if val and not val.startswith("#"):
@@ -177,18 +188,31 @@ def research_company_pipeline(
     # If entity is absent from both registry and dataset:
     if not enhet_data and not seed_facts:
         elapsed = round(time.time() - t0, 3)
+        registry_failed = any(
+            s.status in (ResearchOutcome.BLOCKED, ResearchOutcome.FAILED)
+            for s in sources_consulted if s.source_type == "official_registry"
+        )
+        if registry_failed:
+            is_blocked = any(s.status == ResearchOutcome.BLOCKED for s in sources_consulted)
+            outcome = ResearchOutcome.BLOCKED if is_blocked else ResearchOutcome.FAILED
+            status_code = "SOURCE_UNAVAILABLE"
+            synth = f"Research failed: Official registry source was unavailable or blocked for '{clean_orgnr}'."
+        else:
+            outcome = ResearchOutcome.NOT_AVAILABLE
+            status_code = "NOT_FOUND"
+            synth = (
+                f"No public registration records or financial statements found for organization number "
+                f"'{clean_orgnr}' in Brønnøysundregistrene or the local 2025 dataset catalogue."
+            )
         return CompanyResultEnvelope(
             organisation_number=clean_orgnr,
-            outcome=ResearchOutcome.NOT_AVAILABLE,
+            outcome=outcome,
             name=None,
-            status="NOT_FOUND",
+            status=status_code,
             company=None,
             facts={},
             field_statuses={},
-            synthesis=(
-                f"No public registration records or financial statements found for organization number "
-                f"'{clean_orgnr}' in Brønnøysundregistrene or the local 2025 dataset catalogue."
-            ),
+            synthesis=synth,
             sources_consulted=sources_consulted,
             execution_time_seconds=elapsed,
             errors=errors,
@@ -225,6 +249,14 @@ def research_company_pipeline(
             )
         except Exception as fin_err:
             logger.debug("Regnskap API error for %s: %s", clean_orgnr, fin_err)
+            sources_consulted.append(
+                SourceConsulted(
+                    source_type="official_financial_statement",
+                    url=f"https://data.brreg.no/regnskapsregisteret/regnskap/{clean_orgnr}",
+                    status=ResearchOutcome.FAILED,
+                    http_code=500,
+                )
+            )
 
     # 6. Operating Establishments (Tier 4: Underenheter)
     underenheter_list = None
@@ -252,12 +284,14 @@ def research_company_pipeline(
         company_name_hint = (enhet_data.get("navn") if enhet_data else None) or (
             seed_facts.get("legal_name").value if "legal_name" in seed_facts else None
         )
+        is_group_flag = enhet_data.get("erIKonsern") if enhet_data else None
         try:
             online_data = web.collect(
                 target_website,
                 expected_orgnr=clean_orgnr,
                 expected_name=company_name_hint,
                 crawl_subpages=True,
+                is_part_of_group=is_group_flag,
             )
             site_status = (
                 ResearchOutcome.BLOCKED
@@ -272,8 +306,30 @@ def research_company_pipeline(
                     http_code=online_data.http_status,
                 )
             )
+            if online_data.crawled_news_url and online_data.crawled_news_url != (online_data.website_url or target_website):
+                news_status = (
+                    ResearchOutcome.AVAILABLE
+                    if (online_data.is_identity_verified and online_data.http_status == 200)
+                    else ResearchOutcome.AMBIGUOUS
+                )
+                sources_consulted.append(
+                    SourceConsulted(
+                        source_type="verified_website",
+                        url=online_data.crawled_news_url,
+                        status=news_status,
+                        http_code=200,
+                    )
+                )
         except Exception as web_err:
             logger.debug("Website scrape error for %s: %s", target_website, web_err)
+            sources_consulted.append(
+                SourceConsulted(
+                    source_type="unverified_website",
+                    url=target_website,
+                    status=ResearchOutcome.FAILED,
+                    http_code=500,
+                )
+            )
 
     # 8. Fact Extraction & Profile Synthesis
     # If enhet_data was not found, synthesize baseline enhet from seed facts
@@ -301,7 +357,7 @@ def research_company_pipeline(
     for sc in sources_consulted:
         matching_facts = [
             f for f in profile.facts.values()
-            if (f.source_url == sc.url or f.source_type == sc.source_type)
+            if f.source_url == sc.url
         ]
         sc.facts_extracted = len(matching_facts)
         if sc.facts_extracted > 0:
@@ -316,7 +372,30 @@ def research_company_pipeline(
             else:
                 sc.status = ResearchOutcome.NOT_AVAILABLE
 
-    # 10. Determine Field-Level Statuses
+    profile.sources_consulted = [s.model_dump() for s in sources_consulted]
+
+    # 10. Audit History & State Transition (preserve prior verified facts across transient errors)
+    old_profile = company_repository.get_profile(clean_orgnr)
+    if old_profile:
+        profile.created_at = old_profile.created_at
+        changes = detect_fact_changes(old_profile, profile)
+        profile.change_history = old_profile.change_history + [
+            c for c in changes if c.change_type != FactStatus.UNCHANGED
+        ]
+    else:
+        profile.change_history = [
+            FactChangeRecord(
+                fact_key=k,
+                old_value=None,
+                new_value=v.value,
+                change_type=FactStatus.NEW,
+                source_url=v.source_url,
+                explanation=f"New fact '{k}' discovered from {v.source_type} ({v.source_url}).",
+            )
+            for k, v in profile.facts.items()
+        ]
+
+    # 11. Determine Field-Level Statuses
     field_statuses["legal_name"] = ResearchOutcome.AVAILABLE if profile.name else ResearchOutcome.NOT_AVAILABLE
     field_statuses["legal_form"] = ResearchOutcome.AVAILABLE if profile.legal_form_code else ResearchOutcome.NOT_AVAILABLE
     field_statuses["company_status"] = ResearchOutcome.AVAILABLE if profile.status else ResearchOutcome.NOT_AVAILABLE
@@ -350,38 +429,38 @@ def research_company_pipeline(
         else:
             field_statuses["website"] = ResearchOutcome.AVAILABLE
     else:
-        field_statuses["website"] = ResearchOutcome.NOT_AVAILABLE
+        if online_data and online_data.website_url:
+            if online_data.http_status == 403:
+                field_statuses["website"] = ResearchOutcome.BLOCKED
+            elif getattr(online_data, "ownership_status", "") == "parent_group" or not online_data.is_identity_verified:
+                field_statuses["website"] = ResearchOutcome.AMBIGUOUS
+            else:
+                field_statuses["website"] = ResearchOutcome.NOT_AVAILABLE
+        else:
+            field_statuses["website"] = ResearchOutcome.NOT_AVAILABLE
 
     field_statuses["officers"] = (
         ResearchOutcome.AVAILABLE if profile.officers else ResearchOutcome.NOT_AVAILABLE
     )
 
-    # 10. Audit History & State Transition
-    old_profile = company_repository.get_profile(clean_orgnr)
-    if old_profile:
-        profile.created_at = old_profile.created_at
-        changes = detect_fact_changes(old_profile, profile)
-        profile.change_history = old_profile.change_history + [
-            c for c in changes if c.change_type != FactStatus.UNCHANGED
-        ]
+    if "social_media" in profile.facts:
+        field_statuses["social_media"] = ResearchOutcome.AVAILABLE
+    elif online_data and getattr(online_data, "social_links", None):
+        field_statuses["social_media"] = ResearchOutcome.AMBIGUOUS
     else:
-        profile.change_history = [
-            FactChangeRecord(
-                fact_key=k,
-                old_value=None,
-                new_value=v.value,
-                change_type=FactStatus.NEW,
-                source_url=v.source_url,
-                explanation=f"Initial discovery of '{k}' for {clean_orgnr}.",
-            )
-            for k, v in profile.facts.items()
-        ]
+        field_statuses["social_media"] = ResearchOutcome.NOT_AVAILABLE
+
+    if "news_articles" in profile.facts or "public_announcements" in profile.facts:
+        field_statuses["news"] = ResearchOutcome.AVAILABLE
+    elif online_data and (online_data.announcements or getattr(online_data, "news_items", None)):
+        field_statuses["news"] = ResearchOutcome.AMBIGUOUS
+    else:
+        field_statuses["news"] = ResearchOutcome.NOT_AVAILABLE
 
     # Generate synthesis
     synthesis = generate_company_synthesis(profile, profile.change_history)
     profile.synthesis = synthesis
     profile.field_statuses = field_statuses
-    profile.sources_consulted = [s.model_dump() for s in sources_consulted]
 
     # Save to SQLite database
     company_repository.save_profile(profile)
