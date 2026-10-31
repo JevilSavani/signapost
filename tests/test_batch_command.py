@@ -252,10 +252,55 @@ def test_batch_missing_input_file_returns_nonzero(tmp_path):
     assert "not found" in res.stderr.lower()
 
 
-def test_existing_evaluate_functionality_preserved():
+def test_batch_empty_input_file(tmp_path):
+    """Verify batch processing on a completely empty input file succeeds with 0 records."""
+    empty_input = tmp_path / "empty.txt"
+    empty_input.write_text("", encoding="utf-8")
+    output_file = tmp_path / "empty_out.jsonl"
+
+    identifiers = load_input_identifiers(empty_input)
+    assert identifiers == []
+
+    envelopes = process_batch(identifiers, crawl_website=False)
+    assert envelopes == []
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "src.main",
+        "--batch",
+        str(empty_input),
+        "--output",
+        str(output_file),
+        "--no-website",
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0
+    assert output_file.exists()
+    assert output_file.read_text(encoding="utf-8").strip() == ""
+
+
+def test_batch_external_api_500_failure_does_not_abort(tmp_path):
+    """Verify temporary 500 server error from external API does not abort batch processing."""
+    identifiers = ["500_error_org", "923609016"]
+    mock_reg = MagicMock()
+    mock_reg.get_enhet.side_effect = [Exception("500 Internal Server Error"), None]
+
+    with patch("src.pipeline.research.RegistryCollector", return_value=mock_reg):
+        envelopes = process_batch(identifiers, crawl_website=False, max_workers=1)
+        assert len(envelopes) == 2
+        # First one failed due to invalid identifier (not 9 digits) or error
+        assert envelopes[0].outcome == ResearchOutcome.FAILED
+        assert envelopes[1].outcome in (ResearchOutcome.AVAILABLE, ResearchOutcome.FAILED)
+
+
+def test_existing_evaluate_functionality_preserved(tmp_path, monkeypatch):
     """Verify existing --evaluate CLI option works without regression."""
+    from src.config import settings
     from src.evaluation.metrics import run_evaluation_benchmark
 
+    monkeypatch.setattr(settings, "reports_dir", tmp_path)
     report = run_evaluation_benchmark()
     assert "total_score" in report
     assert report["total_score"] > 80.0
+
