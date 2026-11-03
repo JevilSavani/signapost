@@ -41,10 +41,12 @@ class CompanyFinancials(BaseModel):
     currency: str | None = None
     currency_units: str | None = "exact"
     total_revenue: float | None = None
+    operating_revenue: float | None = None
     operating_profit: float | None = None
     net_income: float | None = None
     total_assets: float | None = None
     total_equity: float | None = None
+    total_liabilities: float | None = None
     is_audited: bool | None = None
     statement_type: str | None = None  # e.g., 'SELSKAP' or 'KONSERN'
     journal_number: str | None = None
@@ -112,6 +114,9 @@ class CompanyProfile(BaseModel):
     news_items: list[dict[str, Any]] = Field(default_factory=list)
 
     is_part_of_group: bool | None = None
+    parent_company_orgnr: str | None = None
+    parent_company_name: str | None = None
+    group_workforce: int | None = None
     share_capital: float | None = None
 
     officers: list[CompanyOfficer] = Field(default_factory=list)

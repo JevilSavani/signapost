@@ -1,0 +1,249 @@
+{
+  "dashboard_name": "Signalpost Field-Level Quality Dashboard",
+  "generated_at": "2026-11-01T08:42:50.111587+00:00",
+  "total_profiles_evaluated": 1000,
+  "fields": {
+    "legal_name": {
+      "expected_records": 1000,
+      "collected_records": 1000,
+      "correct_records": 1000,
+      "incorrect_records": 0,
+      "missing_records": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "coverage": 1.0,
+      "provenance_completeness": 1.0
+    },
+    "legal_form": {
+      "expected_records": 1000,
+      "collected_records": 1000,
+      "correct_records": 1000,
+      "incorrect_records": 0,
+      "missing_records": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "coverage": 1.0,
+      "provenance_completeness": 1.0
+    },
+    "company_status": {
+      "expected_records": 1000,
+      "collected_records": 1000,
+      "correct_records": 1000,
+      "incorrect_records": 0,
+      "missing_records": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "coverage": 1.0,
+      "provenance_completeness": 1.0
+    },
+    "registered_office_address": {
+      "expected_records": 1000,
+      "collected_records": 1000,
+      "correct_records": 1000,
+      "incorrect_records": 0,
+      "missing_records": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "coverage": 1.0,
+      "provenance_completeness": 1.0
+    },
+    "industry_code": {
+      "expected_records": 1000,
+      "collected_records": 997,
+      "correct_records": 997,
+      "incorrect_records": 0,
+      "missing_records": 3,
+      "precision": 1.0,
+      "recall": 0.997,
+      "coverage": 0.997,
+      "provenance_completeness": 1.0
+    },
+    "registration_date": {
+      "expected_records": 1000,
+      "collected_records": 999,
+      "correct_records": 999,
+      "incorrect_records": 0,
+      "missing_records": 1,
+      "precision": 1.0,
+      "recall": 0.999,
+      "coverage": 0.999,
+      "provenance_completeness": 1.0
+    },
+    "founding_date": {
+      "expected_records": 1000,
+      "collected_records": 999,
+      "correct_records": 999,
+      "incorrect_records": 0,
+      "missing_records": 1,
+      "precision": 1.0,
+      "recall": 0.999,
+      "coverage": 0.999,
+      "provenance_completeness": 1.0
+    },
+    "share_capital": {
+      "expected_records": 1000,
+      "collected_records": 999,
+      "correct_records": 999,
+      "incorrect_records": 0,
+      "missing_records": 1,
+      "precision": 1.0,
+      "recall": 0.999,
+      "coverage": 0.999,
+      "provenance_completeness": 1.0
+    },
+    "statutory_purpose": {
+      "expected_records": 1000,
+      "collected_records": 999,
+      "correct_records": 999,
+      "incorrect_records": 0,
+      "missing_records": 1,
+      "precision": 1.0,
+      "recall": 0.999,
+      "coverage": 0.999,
+      "provenance_completeness": 1.0
+    },
+    "employee_count": {
+      "expected_records": 1000,
+      "collected_records": 92,
+      "correct_records": 48,
+      "incorrect_records": 44,
+      "missing_records": 908,
+      "precision": 0.5217,
+      "recall": 0.048,
+      "coverage": 0.092,
+      "provenance_completeness": 1.0
+    },
+    "official_website": {
+      "expected_records": 1000,
+      "collected_records": 70,
+      "correct_records": 0,
+      "incorrect_records": 70,
+      "missing_records": 930,
+      "precision": 0.0,
+      "recall": 0.0,
+      "coverage": 0.07,
+      "provenance_completeness": 1.0
+    },
+    "total_revenue": {
+      "expected_records": 1000,
+      "collected_records": 150,
+      "correct_records": 150,
+      "incorrect_records": 0,
+      "missing_records": 850,
+      "precision": 1.0,
+      "recall": 0.15,
+      "coverage": 0.15,
+      "provenance_completeness": 1.0
+    },
+    "operating_revenue": {
+      "expected_records": 1000,
+      "collected_records": 0,
+      "correct_records": 0,
+      "incorrect_records": 0,
+      "missing_records": 1000,
+      "precision": 1.0,
+      "recall": 0.0,
+      "coverage": 0.0,
+      "provenance_completeness": 1.0
+    },
+    "operating_profit": {
+      "expected_records": 1000,
+      "collected_records": 181,
+      "correct_records": 181,
+      "incorrect_records": 0,
+      "missing_records": 819,
+      "precision": 1.0,
+      "recall": 0.181,
+      "coverage": 0.181,
+      "provenance_completeness": 1.0
+    },
+    "net_income": {
+      "expected_records": 1000,
+      "collected_records": 184,
+      "correct_records": 184,
+      "incorrect_records": 0,
+      "missing_records": 816,
+      "precision": 1.0,
+      "recall": 0.184,
+      "coverage": 0.184,
+      "provenance_completeness": 1.0
+    },
+    "total_assets": {
+      "expected_records": 1000,
+      "collected_records": 161,
+      "correct_records": 161,
+      "incorrect_records": 0,
+      "missing_records": 839,
+      "precision": 1.0,
+      "recall": 0.161,
+      "coverage": 0.161,
+      "provenance_completeness": 1.0
+    },
+    "total_equity": {
+      "expected_records": 1000,
+      "collected_records": 161,
+      "correct_records": 161,
+      "incorrect_records": 0,
+      "missing_records": 839,
+      "precision": 1.0,
+      "recall": 0.161,
+      "coverage": 0.161,
+      "provenance_completeness": 1.0
+    },
+    "total_liabilities": {
+      "expected_records": 1000,
+      "collected_records": 35,
+      "correct_records": 35,
+      "incorrect_records": 0,
+      "missing_records": 965,
+      "precision": 1.0,
+      "recall": 0.035,
+      "coverage": 0.035,
+      "provenance_completeness": 1.0
+    },
+    "ceo_name": {
+      "expected_records": 1000,
+      "collected_records": 122,
+      "correct_records": 122,
+      "incorrect_records": 0,
+      "missing_records": 878,
+      "precision": 1.0,
+      "recall": 0.122,
+      "coverage": 0.122,
+      "provenance_completeness": 1.0
+    },
+    "board_chair": {
+      "expected_records": 1000,
+      "collected_records": 190,
+      "correct_records": 190,
+      "incorrect_records": 0,
+      "missing_records": 810,
+      "precision": 1.0,
+      "recall": 0.19,
+      "coverage": 0.19,
+      "provenance_completeness": 1.0
+    },
+    "contact_phone": {
+      "expected_records": 1000,
+      "collected_records": 4,
+      "correct_records": 4,
+      "incorrect_records": 0,
+      "missing_records": 996,
+      "precision": 1.0,
+      "recall": 0.004,
+      "coverage": 0.004,
+      "provenance_completeness": 1.0
+    },
+    "contact_email": {
+      "expected_records": 1000,
+      "collected_records": 2,
+      "correct_records": 2,
+      "incorrect_records": 0,
+      "missing_records": 998,
+      "precision": 1.0,
+      "recall": 0.002,
+      "coverage": 0.002,
+      "provenance_completeness": 1.0
+    }
+  }
+}

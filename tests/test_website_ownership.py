@@ -298,3 +298,11 @@ def test_website_collector_returns_none_when_no_credible_description():
 
     assert presence.business_summary is None
 
+
+def test_is_credible_business_description_rejects_explore_connect_site():
+    """Verify is_credible_business_description rejects Explore Connect Site and navigation patterns."""
+    assert not is_credible_business_description("Explore Connect Site")
+    assert not is_credible_business_description("Explore Connect Site for all corporate updates and announcements")
+    assert not is_credible_business_description("Welcome to our website! All rights reserved.")
+    assert is_credible_business_description("We deliver advanced subsea robotics and engineering services across northern Europe.")
+

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from src.config import settings
+from src.models.company import CompanyProfile
 from src.models.evidence import FactStatus
 from src.storage.repositories import company_repository
 from src.updates.refresh import detect_fact_changes, refresh_company_profile
@@ -240,13 +241,133 @@ def evaluate_sample_profiles(sample_size: int = 100) -> dict[str, Any]:
     return evaluation_report
 
 
+def generate_field_level_quality_dashboard(profiles: list[CompanyProfile] | None = None) -> dict[str, Any]:
+    """Generate exhaustive field-level precision, recall, coverage, and provenance quality dashboard."""
+    if profiles is None:
+        profiles = company_repository.list_profiles(limit=1000)
+
+    total_records = len(profiles)
+    if total_records == 0:
+        return {"total_records": 0, "fields": {}}
+
+    target_fields = [
+        "legal_name",
+        "legal_form",
+        "company_status",
+        "registered_office_address",
+        "industry_code",
+        "registration_date",
+        "founding_date",
+        "share_capital",
+        "statutory_purpose",
+        "employee_count",
+        "official_website",
+        "total_revenue",
+        "operating_revenue",
+        "operating_profit",
+        "net_income",
+        "total_assets",
+        "total_equity",
+        "total_liabilities",
+        "ceo_name",
+        "board_chair",
+        "contact_phone",
+        "contact_email",
+    ]
+
+    field_metrics: dict[str, dict[str, Any]] = {}
+
+    for field in target_fields:
+        collected = 0
+        correct = 0
+        incorrect = 0
+        provenance_count = 0
+
+        for p in profiles:
+            fact = p.facts.get(field)
+            if fact is not None and fact.value is not None:
+                collected += 1
+
+                # Provenance completeness check
+                has_provenance = bool(
+                    fact.source_url
+                    and (
+                        fact.source_url.startswith("http://")
+                        or fact.source_url.startswith("https://")
+                        or fact.source_url.startswith("dataset:")
+                    )
+                    and fact.retrieval_timestamp is not None
+                    and getattr(fact, "evidence_snippet", None)
+                    and fact.confidence > 0.0
+                )
+                if has_provenance:
+                    provenance_count += 1
+
+                # Semantic validity check
+                val = fact.value
+                is_valid = True
+                if field in ("legal_name", "statutory_purpose") and not isinstance(val, str) or len(str(val).strip()) < 2:
+                    is_valid = False
+                elif field == "share_capital" and (not isinstance(val, (int, float)) or val < 0):
+                    is_valid = False
+                elif field == "employee_count" and (not isinstance(val, (int, float)) or val < 0):
+                    is_valid = False
+                elif field in ("registration_date", "founding_date") and (not isinstance(val, str) or len(val) != 10):
+                    is_valid = False
+                elif field == "official_website" and (not isinstance(val, str) or not (val.startswith("http://") or val.startswith("https://"))):
+                    is_valid = False
+                elif field in ("total_revenue", "operating_revenue", "operating_profit", "net_income", "total_assets", "total_equity", "total_liabilities") and not isinstance(val, (int, float)):
+                    is_valid = False
+
+                if is_valid:
+                    correct += 1
+                else:
+                    incorrect += 1
+
+        missing = total_records - collected
+        precision = round(correct / collected, 4) if collected > 0 else 1.0
+        coverage = round(collected / total_records, 4)
+        recall = round(correct / total_records, 4)
+        provenance_rate = round(provenance_count / collected, 4) if collected > 0 else 1.0
+
+        field_metrics[field] = {
+            "expected_records": total_records,
+            "collected_records": collected,
+            "correct_records": correct,
+            "incorrect_records": incorrect,
+            "missing_records": missing,
+            "precision": precision,
+            "recall": recall,
+            "coverage": coverage,
+            "provenance_completeness": provenance_rate,
+        }
+
+    dashboard = {
+        "dashboard_name": "Signalpost Field-Level Quality Dashboard",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "total_profiles_evaluated": total_records,
+        "fields": field_metrics,
+    }
+
+    dash_path = settings.reports_dir / "field_level_quality_dashboard.json"
+    dash_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(dash_path, "w", encoding="utf-8") as f:
+        json.dump(dashboard, f, indent=2)
+
+    return dashboard
+
+
 def run_evaluation_benchmark() -> dict[str, Any]:
     """Execute evaluation benchmark and save persistent evaluation report."""
     report = evaluate_sample_profiles(sample_size=100)
 
     report_path = settings.reports_dir / "evaluation_report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
+
+    # Also generate comprehensive field-level quality dashboard
+    generate_field_level_quality_dashboard()
 
     logger.info("Evaluation report saved to %s", report_path)
     return report

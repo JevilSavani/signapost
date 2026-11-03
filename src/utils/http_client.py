@@ -141,9 +141,13 @@ class CachedHttpClient:
                 is_success = response.status_code < 400 or response.status_code == 404
                 global_budget.record_request(cost=0.0, is_success=is_success)
 
-                # Retry on server overload or rate limiting
-                if response.status_code in (429, 502, 503, 504) and attempt < max_retries - 1:
-                    time.sleep(backoff)
+                # Retry on server overload, rate limiting, or temporary gateway errors
+                if response.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                    retry_after = response.headers.get("retry-after")
+                    sleep_dur = backoff
+                    if retry_after and retry_after.isdigit():
+                        sleep_dur = min(float(retry_after), 5.0)
+                    time.sleep(sleep_dur)
                     backoff *= 2.0
                     continue
 

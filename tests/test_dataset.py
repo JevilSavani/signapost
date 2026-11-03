@@ -104,3 +104,19 @@ def test_jsonl_export_validity(temp_repo: CompanyRepository, tmp_path: Path):
         assert record["registration_number"] == "923609016"
         assert record["name"] == "EQUINOR ASA"
         assert "facts" in record
+
+
+def test_build_dataset_from_master_catalogue(monkeypatch, tmp_path: Path):
+    """Verify build_dataset_pipeline streams from financial-filer-master-2025.jsonl."""
+    from src.updates.refresh import build_dataset_pipeline
+    from src.config import settings
+
+    test_export = tmp_path / "test_profiles.jsonl"
+    test_reports = tmp_path / "reports"
+    monkeypatch.setattr(settings, "profiles_export_path", test_export)
+    monkeypatch.setattr(settings, "reports_dir", test_reports)
+
+    report = build_dataset_pipeline(target_count=3, use_master_dataset=True)
+    assert report["successfully_processed"] == 3
+    assert "source_catalogue" in report
+    assert test_export.exists()

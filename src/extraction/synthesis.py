@@ -123,6 +123,8 @@ def generate_company_synthesis(
             fin_lines.append(f"- **Total Assets (Eiendeler)**: {fin.total_assets:,.0f}{curr_label}{units_note}")
         if fin.total_equity is not None:
             fin_lines.append(f"- **Total Equity (Egenkapital)**: {fin.total_equity:,.0f}{curr_label}{units_note}")
+        if fin.total_liabilities is not None:
+            fin_lines.append(f"- **Total Liabilities (Gjeld)**: {fin.total_liabilities:,.0f}{curr_label}{units_note}")
     else:
         fin_lines.append("- **Annual Accounts**: Financial statements are not available in Regnskapsregisteret.")
 
@@ -132,6 +134,8 @@ def generate_company_synthesis(
         else "Not available in public records"
     )
     fin_lines.append(f"- **Workforce Count**: {emp_str}")
+    if profile.group_workforce is not None:
+        fin_lines.append(f"- **Group-Wide Global Workforce**: ~{profile.group_workforce:,} employees")
 
     fin_text = "### 3. Financial Performance & Employment\n" + "\n".join(fin_lines)
     sections.append(fin_text)

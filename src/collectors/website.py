@@ -110,9 +110,9 @@ class WebsiteCollector:
         base_origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
 
         patterns = {
-            "careers": re.compile(r"/(karriere|careers|jobb|jobber|ledige-stillinger|stillinger)(/|$|\?)", re.I),
-            "news": re.compile(r"/(nyheter|news|presse|aktuelt|pressemeldinger|news-and-media)(/|$|\?)", re.I),
-            "about": re.compile(r"/(om-oss|om-selskapet|about|about-us)(/|$|\?)", re.I),
+            "careers": re.compile(r"/(karriere|careers|jobb|jobber|ledige-stillinger|stillinger|arbeid-hos-oss)(/|$|\?)", re.I),
+            "news": re.compile(r"/(nyheter|news|presse|aktuelt|pressemeldinger|pressemelding|press-releases?|news-and-media|media)(/|$|\?)", re.I),
+            "about": re.compile(r"/(om-oss|om-selskapet|om-virksomheten|about|about-us|hvem-er-vi)(/|$|\?)", re.I),
         }
 
         # Collect and normalize all candidate anchor links

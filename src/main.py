@@ -132,6 +132,11 @@ def main() -> None:
         help="Display agent operational statistics and budget consumption",
     )
     parser.add_argument(
+        "--quality-dashboard",
+        action="store_true",
+        help="Generate exhaustive field-level precision, recall, and coverage quality dashboard",
+    )
+    parser.add_argument(
         "--export",
         type=str,
         metavar="PATH",
@@ -172,6 +177,15 @@ def main() -> None:
         report = run_evaluation_benchmark()
         console.print(f"[bold green]Evaluation Score:[/bold green] {report['total_score']}/100.0")
         console.print(json.dumps(report, indent=2))
+        return
+
+    if args.quality_dashboard:
+        from src.evaluation.metrics import generate_field_level_quality_dashboard
+
+        console.print("[bold yellow]Generating Field-Level Quality Dashboard...[/bold yellow]")
+        dash = generate_field_level_quality_dashboard()
+        console.print(f"[bold green]Dashboard Generated across {dash['total_profiles_evaluated']} profiles.[/bold green]")
+        console.print(json.dumps(dash, indent=2))
         return
 
     # Batch file research

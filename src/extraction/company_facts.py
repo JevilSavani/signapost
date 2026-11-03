@@ -306,7 +306,7 @@ def extract_profile_from_sources(
         )
 
     is_vat = enhet_data.get("registrertIMvaregisteret")
-    statutory_purpose_raw = enhet_data.get("vedtektsfestetFormaal")
+    statutory_purpose_raw = enhet_data.get("vedtektsfestetFormaal") or enhet_data.get("formaal")
     statutory_purpose = (
         " ".join(statutory_purpose_raw)
         if isinstance(statutory_purpose_raw, list)
@@ -342,6 +342,54 @@ def extract_profile_from_sources(
             confidence=1.0,
             is_independently_confirmed=True,
             evidence_snippet=f"hjemmeside: {website}",
+        )
+
+    phone_registry = enhet_data.get("telefon")
+    if phone_registry and "contact_phone" not in facts:
+        facts["contact_phone"] = ProvenanceFact(
+            fact_key="contact_phone",
+            category=FactCategory.COMMUNICATION if hasattr(FactCategory, "COMMUNICATION") else FactCategory.OPERATIONAL,
+            value=str(phone_registry).strip(),
+            source_url=enhet_url,
+            source_type="official_registry",
+            source_title="Brønnøysundregistrene Enhetsregisteret",
+            associated_orgnr=clean_orgnr,
+            retrieval_timestamp=now_utc,
+            confidence=1.0,
+            is_independently_confirmed=True,
+            evidence_snippet=f"telefon: {phone_registry}",
+        )
+
+    email_registry = enhet_data.get("epost")
+    if email_registry and "contact_email" not in facts:
+        facts["contact_email"] = ProvenanceFact(
+            fact_key="contact_email",
+            category=FactCategory.COMMUNICATION if hasattr(FactCategory, "COMMUNICATION") else FactCategory.OPERATIONAL,
+            value=str(email_registry).strip(),
+            source_url=enhet_url,
+            source_type="official_registry",
+            source_title="Brønnøysundregistrene Enhetsregisteret",
+            associated_orgnr=clean_orgnr,
+            retrieval_timestamp=now_utc,
+            confidence=1.0,
+            is_independently_confirmed=True,
+            evidence_snippet=f"epost: {email_registry}",
+        )
+
+    overordnet_enhet = enhet_data.get("overordnetEnhet")
+    if overordnet_enhet and "parent_company" not in facts:
+        facts["parent_company"] = ProvenanceFact(
+            fact_key="parent_company",
+            category=FactCategory.CORPORATE if hasattr(FactCategory, "CORPORATE") else FactCategory.REGISTRATION,
+            value=str(overordnet_enhet).strip(),
+            source_url=enhet_url,
+            source_type="official_registry",
+            source_title="Brønnøysundregistrene Enhetsregisteret",
+            associated_orgnr=clean_orgnr,
+            retrieval_timestamp=now_utc,
+            confidence=1.0,
+            is_independently_confirmed=True,
+            evidence_snippet=f"overordnetEnhet: {overordnet_enhet}",
         )
 
     # 2. Key People / Officers from Roller
@@ -515,12 +563,14 @@ def extract_profile_from_sources(
 
             # Revenue: strictly distinguish genuine 0.0 from missing None
             revenue = None
+            operating_revenue = None
             revenue_key = "sumDriftsinntekter"
             if (
                 "sumDriftsinntekter" in driftsinntekter_dict
                 and driftsinntekter_dict["sumDriftsinntekter"] is not None
             ):
                 revenue = float(driftsinntekter_dict["sumDriftsinntekter"])
+                operating_revenue = revenue
                 revenue_key = "sumDriftsinntekter"
             elif (
                 "salgsinntekter" in driftsinntekter_dict
@@ -547,7 +597,7 @@ def extract_profile_from_sources(
                 except Exception:
                     pass
 
-            # Balance sheet assets and equity
+            # Balance sheet assets, equity, and liabilities
             assets = None
             eiendeler_dict = latest.get("eiendeler", {})
             if "sumEiendeler" in eiendeler_dict and eiendeler_dict["sumEiendeler"] is not None:
@@ -562,6 +612,16 @@ def extract_profile_from_sources(
             if "sumEgenkapital" in egenkapital_dict and egenkapital_dict["sumEgenkapital"] is not None:
                 equity = float(egenkapital_dict["sumEgenkapital"])
 
+            liabilities = None
+            egenkapital_gjeld_dict = latest.get("egenkapitalGjeld", {})
+            gjeld_oversikt = egenkapital_gjeld_dict.get("gjeldOversikt", {})
+            if "sumGjeld" in gjeld_oversikt and gjeld_oversikt["sumGjeld"] is not None:
+                liabilities = float(gjeld_oversikt["sumGjeld"])
+            elif "sumGjeld" in egenkapital_gjeld_dict and egenkapital_gjeld_dict["sumGjeld"] is not None:
+                liabilities = float(egenkapital_gjeld_dict["sumGjeld"])
+            elif "sumGjeld" in latest.get("gjeld", {}) and latest.get("gjeld", {})["sumGjeld"] is not None:
+                liabilities = float(latest.get("gjeld", {})["sumGjeld"])
+
             financials = CompanyFinancials(
                 reporting_year=reporting_year,
                 period_start=start_date,
@@ -569,10 +629,12 @@ def extract_profile_from_sources(
                 currency=currency,
                 currency_units="exact",
                 total_revenue=revenue,
+                operating_revenue=operating_revenue,
                 operating_profit=operating_profit,
                 net_income=net_income,
                 total_assets=assets,
                 total_equity=equity,
+                total_liabilities=liabilities,
                 is_audited=is_audited,
                 statement_type=statement_type,
                 journal_number=journal_nr,
@@ -677,6 +739,26 @@ def extract_profile_from_sources(
                     is_independently_confirmed=True,
                     evidence_snippet=(
                         f"sumEgenkapital: {equity}{curr_tag} "
+                        f"(Period: {start_date} to {end_date}, Type: {statement_type}, {unit_tag})"
+                    ),
+                )
+
+            if liabilities is not None:
+                facts["total_liabilities"] = ProvenanceFact(
+                    fact_key="total_liabilities",
+                    category=FactCategory.FINANCIAL,
+                    value=liabilities,
+                    source_url=regnskap_url,
+                    source_type="official_financial_statement",
+                    source_title="Brønnøysundregistrene Regnskapsregisteret",
+                    associated_orgnr=clean_orgnr,
+                    retrieval_timestamp=now_utc,
+                    reporting_period_start=start_date,
+                    reporting_period_end=end_date,
+                    confidence=1.0,
+                    is_independently_confirmed=True,
+                    evidence_snippet=(
+                        f"sumGjeld: {liabilities}{curr_tag} "
                         f"(Period: {start_date} to {end_date}, Type: {statement_type}, {unit_tag})"
                     ),
                 )
@@ -954,12 +1036,13 @@ def extract_profile_from_sources(
             else (
                 online_data.business_summary
                 if (online_data and online_data.is_identity_verified and online_data.business_summary and is_credible_business_description(online_data.business_summary))
-                else None
+                else (statutory_purpose if statutory_purpose and is_credible_business_description(statutory_purpose) else None)
             )
         ),
         website=verified_website,
         phone=enhet_data.get("telefon") or (online_data.contact_phone if online_data and online_data.is_identity_verified else None),
-        email=online_data.contact_email if online_data and online_data.is_identity_verified else None,
+        email=enhet_data.get("epost") or (online_data.contact_email if online_data and online_data.is_identity_verified else None),
+        parent_company_orgnr=enhet_data.get("overordnetEnhet"),
         social_links=online_data.social_links if online_data else [],
         news_items=online_data.news_items if online_data else [],
         is_part_of_group=enhet_data.get("erIKonsern"),

@@ -212,6 +212,11 @@ BOILERPLATE_SUBSTRING_PATTERNS = [
     r"\bdesigned\s+by\b",
     r"\butviklet\s+av\b",
     r"\bpowered\s+by\b",
+    r"\bexplore\s+connect\s+site\b",
+    r"\bvelkommen\s+til\s+våre\s+nettsider\b",
+    r"\bwelcome\s+to\s+our\s+website\b",
+    r"\blet'?s\s+connect\b",
+    r"\bunder\s+construction\b",
 ]
 
 NAVIGATION_TOKENS = {

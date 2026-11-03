@@ -181,3 +181,65 @@ def test_missing_revenue_is_none_and_not_zero():
     assert "total_revenue" not in profile.facts
     assert "operating_profit" in profile.facts
     assert "net_income" in profile.facts
+
+
+def test_liabilities_and_operating_revenue_extraction():
+    """Verify total liabilities (sumGjeld) and operating revenue are accurately extracted."""
+    enhet = {
+        "organisasjonsnummer": "923609016",
+        "navn": "EQUINOR ASA",
+        "organisasjonsform": {"kode": "ASA", "beskrivelse": "Allmennaksjeselskap"},
+    }
+    filing = [
+        {
+            "regnskapstype": "KONSERN",
+            "virksomhet": {"organisasjonsnummer": "923609016"},
+            "regnskapsperiode": {"fraDato": "2025-01-01", "tilDato": "2025-12-31"},
+            "valuta": "USD",
+            "resultatregnskapResultat": {
+                "driftsresultat": {
+                    "driftsinntekter": {"sumDriftsinntekter": 106462000000.0},
+                    "driftsresultat": 25353000000.0,
+                },
+                "aarsresultat": 5058000000.0,
+            },
+            "eiendeler": {"sumEiendeler": 131727000000.0},
+            "egenkapitalGjeld": {
+                "egenkapital": {"sumEgenkapital": 40497000000.0},
+                "gjeldOversikt": {"sumGjeld": 91230000000.0},
+            },
+        }
+    ]
+    profile = extract_profile_from_sources("923609016", enhet, regnskap_list=filing)
+    assert profile.financials is not None
+    assert profile.financials.total_liabilities == 91230000000.0
+    assert profile.financials.operating_revenue == 106462000000.0
+    assert profile.financials.currency_units == "exact"
+    assert "total_liabilities" in profile.facts
+    assert profile.facts["total_liabilities"].value == 91230000000.0
+    assert "sumGjeld: 91230000000.0 USD" in profile.facts["total_liabilities"].evidence_snippet
+
+
+def test_equinor_anti_oscillation_multi_run():
+    """Verify repeated runs on Equinor ASA yield identical period, scope, currency, and financial figures."""
+    from src.pipeline.research import research_company_pipeline
+
+    results = [
+        research_company_pipeline("923609016", crawl_website=False)
+        for _ in range(3)
+    ]
+    for r in results:
+        assert r.company is not None
+        assert r.company.financials is not None
+        fin = r.company.financials
+        assert fin.period_start == "2025-01-01"
+        assert fin.period_end == "2025-12-31"
+        assert fin.statement_type == "KONSERN"
+        assert fin.currency == "USD"
+        assert fin.total_revenue == 106462000000.0
+        assert fin.operating_profit == 25353000000.0
+        assert fin.net_income == 5058000000.0
+        assert fin.total_assets == 131727000000.0
+        assert fin.total_equity == 40497000000.0
+        assert fin.total_liabilities == 91230000000.0
+        assert fin.currency_units == "exact"

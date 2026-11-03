@@ -23,7 +23,7 @@ class Settings(BaseModel):
         default_factory=lambda: BASE_DIR / os.getenv("DATABASE_PATH", "data/signalpost.db")
     )
     master_dataset_path: Path = Field(
-        default_factory=lambda: BASE_DIR / os.getenv("MASTER_DATASET_PATH", "data/financial-filer-master-2025.jsonl")
+        default_factory=lambda: BASE_DIR / os.getenv("MASTER_DATASET_PATH", os.getenv("DATASET_PATH", "data/financial-filer-master-2025.jsonl"))
     )
     dataset_index_path: Path = Field(
         default_factory=lambda: BASE_DIR / os.getenv("DATASET_INDEX_PATH", "data/dataset_index.sqlite")

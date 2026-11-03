@@ -13,6 +13,7 @@ from src.config import settings
 from src.extraction.company_facts import extract_profile_from_sources
 from src.models.company import CompanyProfile
 from src.models.evidence import FactCategory, FactChangeRecord, FactStatus
+from src.storage.dataset_loader import dataset_loader
 from src.storage.repositories import company_repository
 from src.utils.rate_limiter import global_budget
 from src.validation.identity import parse_and_verify_orgnr, validate_orgnr
@@ -61,7 +62,8 @@ def detect_fact_changes(
         if old_fact.value != new_fact.value:
             # 1. Financial protection rules
             if old_fact.category == FactCategory.FINANCIAL or key in (
-                "total_revenue", "operating_profit", "net_income", "total_assets", "total_equity", "is_audited"
+                "total_revenue", "operating_revenue", "operating_profit", "net_income",
+                "total_assets", "total_equity", "total_liabilities", "is_audited"
             ):
                 old_end = getattr(old_fact, "reporting_period_end", None) or ""
                 new_end = getattr(new_fact, "reporting_period_end", None) or ""
@@ -293,10 +295,12 @@ def build_dataset_pipeline(
     target_count: int = 1000,
     page_size: int = 100,
     organisasjonsform: str = "AS",
+    use_master_dataset: bool = True,
 ) -> dict[str, Any]:
     """Execute reproducible large-scale collection to build at least 1,000 verified profiles.
 
-    - Uses official Brønnøysundregistrene Enhetsregisteret bulk query API
+    - Prioritizes streaming from local master catalogue (data/financial-filer-master-2025.jsonl)
+    - Seamlessly falls back to official Brønnøysundregistrene Enhetsregisteret bulk query API
     - Strictly validates all 9-digit registration numbers with Modulo 11
     - Deduplicates records
     - Stores complete profiles in SQLite
@@ -313,12 +317,23 @@ def build_dataset_pipeline(
     rejection_reasons: dict[str, int] = {}
 
     seen_orgs: set[str] = set()
-    page = 0
-    max_pages = (target_count // page_size) + 4
 
-    logger.info(
-        "Starting dataset collection pipeline: target=%d, form=%s", target_count, organisasjonsform
-    )
+    # Determine collection strategy
+    stream_from_master = use_master_dataset and dataset_loader.exists()
+
+    if stream_from_master:
+        logger.info(
+            "Starting dataset collection pipeline using master catalogue: %s (target=%d, form=%s)",
+            dataset_loader.dataset_path.name,
+            target_count,
+            organisasjonsform,
+        )
+    else:
+        logger.info(
+            "Starting dataset collection pipeline via live registry API: target=%d, form=%s",
+            target_count,
+            organisasjonsform,
+        )
 
     with Progress(
         SpinnerColumn(),
@@ -327,25 +342,23 @@ def build_dataset_pipeline(
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
         TimeElapsedColumn(),
     ) as progress:
-        task = progress.add_task("Collecting profiles...", total=target_count)
+        task_label = (
+            f"Collecting profiles from {dataset_loader.dataset_path.name}..."
+            if stream_from_master
+            else "Collecting profiles from registry..."
+        )
+        task = progress.add_task(task_label, total=target_count)
 
-        while successfully_processed < target_count and page < max_pages:
-            try:
-                enheter = reg_collector.list_companies(
-                    organisasjonsform=organisasjonsform, page=page, size=page_size
-                )
-                if not enheter:
-                    logger.info("No more companies returned at page %d", page)
-                    break
-            except Exception as e:
-                logger.error("Failed to query page %d: %s", page, e)
-                break
-
-            for enhet in enheter:
+        if stream_from_master:
+            for record in dataset_loader.iter_records():
                 attempted += 1
-                raw_orgnr = str(enhet.get("organisasjonsnummer", "")).strip()
+                raw_orgnr = record.organisation_number
+                if not raw_orgnr:
+                    continue
 
-                # Validate identity
+                if organisasjonsform and record.legal_form and record.legal_form.upper() != organisasjonsform.upper():
+                    continue
+
                 is_valid, clean_orgnr, reason = validate_orgnr(raw_orgnr)
                 if not is_valid:
                     rejected += 1
@@ -353,13 +366,22 @@ def build_dataset_pipeline(
                     continue
 
                 if clean_orgnr in seen_orgs:
-                    # Deduplicate
                     continue
                 seen_orgs.add(clean_orgnr)
 
-                # For selected subset with official websites, collect online presence
+                seed_facts = dataset_loader.get_seed_facts(clean_orgnr)
+                enhet_payload = {
+                    "organisasjonsnummer": clean_orgnr,
+                    "navn": record.name or f"ENTITY {clean_orgnr}",
+                    "organisasjonsform": {"kode": record.legal_form or "AS", "beskrivelse": "Aksjeselskap"},
+                    "antallAnsatte": record.employees,
+                    "konkurs": bool(record.bankrupt),
+                    "underAvvikling": bool(record.liquidating),
+                }
+
+                # For subset with official websites, collect online presence if budget allows
                 online_data = None
-                website_url = enhet.get("hjemmeside")
+                website_url = record.website
                 if (
                     website_url
                     and successfully_processed < 50
@@ -373,10 +395,11 @@ def build_dataset_pipeline(
                 try:
                     profile = extract_profile_from_sources(
                         expected_orgnr=clean_orgnr,
-                        enhet_data=enhet,
+                        enhet_data=enhet_payload,
                         roller_data=None,
                         regnskap_list=None,
                         online_data=online_data,
+                        seed_facts=seed_facts,
                     )
                     company_repository.save_profile(profile)
                     successfully_processed += 1
@@ -384,15 +407,87 @@ def build_dataset_pipeline(
 
                     if len(profile.facts) < 5:
                         partially_processed += 1
-
                 except Exception as exc:
                     rejected += 1
                     rejection_reasons[str(exc)] = rejection_reasons.get(str(exc), 0) + 1
 
                 if successfully_processed >= target_count:
                     break
+        else:
+            page = 0
+            max_pages = (target_count // page_size) + 4
+            while successfully_processed < target_count and page < max_pages:
+                try:
+                    enheter = reg_collector.list_companies(
+                        organisasjonsform=organisasjonsform, page=page, size=page_size
+                    )
+                    if not enheter:
+                        logger.info("No more companies returned at page %d", page)
+                        break
+                except Exception as e:
+                    logger.error("Failed to query page %d: %s", page, e)
+                    break
 
-            page += 1
+                for enhet in enheter:
+                    attempted += 1
+                    raw_orgnr = str(enhet.get("organisasjonsnummer", "")).strip()
+
+                    # Validate identity
+                    is_valid, clean_orgnr, reason = validate_orgnr(raw_orgnr)
+                    if not is_valid:
+                        rejected += 1
+                        rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                        continue
+
+                    if clean_orgnr in seen_orgs:
+                        # Deduplicate
+                        continue
+                    seen_orgs.add(clean_orgnr)
+
+                    # For selected subset with official websites, collect online presence
+                    online_data = None
+                    website_url = enhet.get("hjemmeside")
+                    if (
+                        website_url
+                        and successfully_processed < 50
+                        and global_budget.remaining_requests > 500
+                    ):
+                        try:
+                            online_data = web_collector.collect(website_url)
+                        except Exception:
+                            pass
+
+                    seed_facts = None
+                    if dataset_loader.exists():
+                        try:
+                            seed_facts = dataset_loader.get_seed_facts(clean_orgnr)
+                        except Exception:
+                            pass
+
+                    try:
+                        profile = extract_profile_from_sources(
+                            expected_orgnr=clean_orgnr,
+                            enhet_data=enhet,
+                            roller_data=None,
+                            regnskap_list=None,
+                            online_data=online_data,
+                            seed_facts=seed_facts,
+                        )
+                        company_repository.save_profile(profile)
+                        successfully_processed += 1
+                        progress.update(task, advance=1)
+
+                        if len(profile.facts) < 5:
+                            partially_processed += 1
+
+                    except Exception as exc:
+                        rejected += 1
+                        rejection_reasons[str(exc)] = rejection_reasons.get(str(exc), 0) + 1
+
+                    if successfully_processed >= target_count:
+                        break
+
+                page += 1
 
     # Export all saved profiles to JSONL
     export_count = company_repository.export_profiles_to_jsonl()
@@ -412,6 +507,7 @@ def build_dataset_pipeline(
 
     quality_report = {
         "dataset_name": "Signalpost Norwegian Company Intelligence Dataset",
+        "source_catalogue": dataset_loader.dataset_path.name if stream_from_master else "Brønnøysundregistrene Enhetsregisteret API",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "target_count": target_count,
         "total_attempted": attempted,
@@ -429,6 +525,7 @@ def build_dataset_pipeline(
 
     # Save quality report to reports/
     report_path = settings.reports_dir / "dataset_quality_report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(quality_report, f, indent=2)
 
