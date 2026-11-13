@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from src.collectors.registry import RegistryCollector
 from src.collectors.website import WebsiteCollector
+from src.collectors.news import CompanyNewsCollector
 from src.extraction.company_facts import extract_profile_from_sources
 from src.extraction.synthesis import generate_company_synthesis
 from src.models.company import CompanyProfile
@@ -24,8 +25,19 @@ logger = logging.getLogger(__name__)
 
 
 def load_input_identifiers(input_source: str | Path) -> list[str]:
-    """Parse company identifiers from diverse formats: JSON, JSONL, CSV, TXT, or comma-separated string."""
+    """Parse company identifiers from diverse formats: JSON, JSONL, CSV, TXT, stdin, or comma-separated string."""
     source_str = str(input_source).strip()
+
+    # Support stdin streaming
+    if source_str == "-":
+        import sys
+        identifiers = []
+        for line in sys.stdin:
+            val = line.strip().strip('"').strip("'")
+            if val and not val.startswith("#"):
+                identifiers.append(val)
+        return identifiers
+
     path = Path(source_str)
 
     looks_like_file = (
@@ -39,7 +51,7 @@ def load_input_identifiers(input_source: str | Path) -> list[str]:
         if looks_like_file:
             raise FileNotFoundError(f"Batch input file not found: {source_str}")
         # Treat as comma-separated or newline-separated string
-        raw_items = [x.strip() for x in source_str.replace("\n", ",").split(",") if x.strip()]
+        raw_items = [x.strip().strip('"').strip("'") for x in source_str.replace("\n", ",").split(",") if x.strip()]
         return raw_items
 
     identifiers: list[str] = []
@@ -51,13 +63,13 @@ def load_input_identifiers(input_source: str | Path) -> list[str]:
             if isinstance(data, list):
                 for item in data:
                     if isinstance(item, str):
-                        s = item.strip()
+                        s = item.strip().strip('"').strip("'")
                         if s:
                             identifiers.append(s)
                     elif isinstance(item, dict):
                         org = item.get("organisation_number") or item.get("orgnr") or item.get("id")
                         if org:
-                            identifiers.append(str(org).strip())
+                            identifiers.append(str(org).strip().strip('"').strip("'"))
     elif suffix == ".jsonl":
         with open(path, "r", encoding="utf-8-sig") as f:
             for line in f:
@@ -69,32 +81,31 @@ def load_input_identifiers(input_source: str | Path) -> list[str]:
                     if isinstance(d, dict):
                         org = d.get("organisation_number") or d.get("orgnr") or d.get("id")
                         if org:
-                            identifiers.append(str(org).strip())
+                            identifiers.append(str(org).strip().strip('"').strip("'"))
                     elif isinstance(d, str):
-                        identifiers.append(d.strip())
+                        identifiers.append(d.strip().strip('"').strip("'"))
                 except Exception:
-                    identifiers.append(s)
+                    identifiers.append(s.strip('"').strip("'"))
     elif suffix == ".csv":
         with open(path, "r", encoding="utf-8-sig") as f:
             reader = csv.reader(f)
             header = next(reader, None)
             col_idx = 0
             if header:
-                # Find matching column
                 for i, h in enumerate(header):
                     if h.lower().strip() in ("organisation_number", "orgnr", "organisasjonsnummer", "id"):
                         col_idx = i
                         break
             for row in reader:
                 if row and len(row) > col_idx:
-                    val = row[col_idx].strip()
+                    val = row[col_idx].strip().strip('"').strip("'")
                     if val:
                         identifiers.append(val)
     else:
         # Default: plaintext one identifier per line (UTF-8 with or without BOM)
         with open(path, "r", encoding="utf-8-sig") as f:
             for line in f:
-                val = line.strip()
+                val = line.strip().strip('"').strip("'")
                 if val and not val.startswith("#"):
                     identifiers.append(val)
 
@@ -129,6 +140,7 @@ def research_company_pipeline(
         elapsed = round(time.time() - t0, 3)
         return CompanyResultEnvelope(
             organisation_number=raw_id,
+            input_identifier=raw_id,
             outcome=ResearchOutcome.FAILED,
             name=None,
             status="INVALID_IDENTIFIER",
@@ -206,6 +218,7 @@ def research_company_pipeline(
             )
         return CompanyResultEnvelope(
             organisation_number=clean_orgnr,
+            input_identifier=raw_id,
             outcome=outcome,
             name=None,
             status=status_code,
@@ -331,6 +344,25 @@ def research_company_pipeline(
                 )
             )
 
+    # 7b. Comprehensive Verified News & Statutory Announcements
+    announcements_data = None
+    if enhet_data:
+        try:
+            news_collector = CompanyNewsCollector()
+            company_name_hint = (enhet_data.get("navn") if enhet_data else None) or (
+                seed_facts.get("legal_name").value if "legal_name" in seed_facts else None
+            )
+            announcements_data = news_collector.collect_all_news(
+                orgnr=clean_orgnr,
+                company_name=company_name_hint or f"ENTITY {clean_orgnr}",
+                website_url=target_website,
+                is_parent_group=(online_data.ownership_status == "parent_group_website" if online_data else False),
+                online_news=getattr(online_data, "news_items", []) if (online_data and online_data.is_identity_verified) else [],
+                max_total=8,
+            )
+        except Exception as ann_err:
+            logger.debug("Announcements collection error for %s: %s", clean_orgnr, ann_err)
+
     # 8. Fact Extraction & Profile Synthesis
     # If enhet_data was not found, synthesize baseline enhet from seed facts
     if not enhet_data and seed_facts:
@@ -351,7 +383,21 @@ def research_company_pipeline(
         online_data=online_data,
         underenheter_list=underenheter_list,
         seed_facts=seed_facts,
+        announcements_data=announcements_data,
     )
+
+    # 8b. Add official announcements source if consulted
+    kunngjoring_url = f"https://w2.brreg.no/kunngjoring/hent_en.jsp?orgnr={clean_orgnr}"
+    if any(f.source_url == kunngjoring_url for f in profile.facts.values()):
+        if not any(s.url == kunngjoring_url for s in sources_consulted):
+            sources_consulted.append(
+                SourceConsulted(
+                    source_type="official_announcements",
+                    url=kunngjoring_url,
+                    status=ResearchOutcome.AVAILABLE,
+                    http_code=200,
+                )
+            )
 
     # 9. Reconcile Sources Consulted with genuinely parsed and validated facts
     for sc in sources_consulted:
@@ -468,6 +514,7 @@ def research_company_pipeline(
     elapsed = round(time.time() - t0, 3)
     return CompanyResultEnvelope(
         organisation_number=clean_orgnr,
+        input_identifier=raw_id,
         outcome=ResearchOutcome.AVAILABLE,
         name=profile.name,
         status=profile.status,
@@ -486,6 +533,8 @@ def process_batch(
     crawl_website: bool = True,
     max_workers: int = 3,
     progress_callback: Callable[[int, int, CompanyResultEnvelope], None] | None = None,
+    reg_collector: RegistryCollector | None = None,
+    web_collector: WebsiteCollector | None = None,
 ) -> list[CompanyResultEnvelope]:
     """Execute concurrent, bounded research across a batch of company identifiers.
 
@@ -498,22 +547,23 @@ def process_batch(
     results: list[CompanyResultEnvelope | None] = [None] * total
 
     # For thread safety across collectors
-    reg_collector = RegistryCollector()
-    web_collector = WebsiteCollector()
+    shared_reg = reg_collector or RegistryCollector()
+    shared_web = web_collector or WebsiteCollector()
 
     def _worker(index: int, org_id: str | int) -> tuple[int, CompanyResultEnvelope]:
         try:
             envelope = research_company_pipeline(
                 org_id,
                 crawl_website=crawl_website,
-                reg_collector=reg_collector,
-                web_collector=web_collector,
+                reg_collector=shared_reg,
+                web_collector=shared_web,
             )
             return index, envelope
         except Exception as e:
             logger.error("Unhandled worker exception on %s: %s", org_id, e)
             err_envelope = CompanyResultEnvelope(
                 organisation_number=str(org_id).strip(),
+                input_identifier=str(org_id).strip(),
                 outcome=ResearchOutcome.FAILED,
                 name=None,
                 status="PIPELINE_ERROR",
@@ -538,5 +588,22 @@ def process_batch(
             if progress_callback:
                 progress_callback(completed, total, envelope)
 
-    # All entries are guaranteed populated
-    return [r for r in results if r is not None]
+    # Fail-safe: ensure every single index is populated with a valid envelope
+    for idx in range(total):
+        if results[idx] is None:
+            raw_id = str(identifiers[idx]).strip()
+            results[idx] = CompanyResultEnvelope(
+                organisation_number=raw_id,
+                input_identifier=raw_id,
+                outcome=ResearchOutcome.FAILED,
+                name=None,
+                status="MISSING_RESULT",
+                company=None,
+                facts={},
+                field_statuses={},
+                synthesis=f"Research failed: Worker terminated without returning a result for '{raw_id}'.",
+                sources_consulted=[],
+                errors=["Worker terminated without returning a result"],
+            )
+
+    return results

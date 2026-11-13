@@ -7,7 +7,7 @@ and links directly to supporting evidence.
 
 from typing import Any
 from src.models.company import CompanyProfile
-from src.models.evidence import FactChangeRecord, FactStatus
+from src.models.evidence import FactChangeRecord, FactStatus, ProvenanceFact
 
 
 def generate_company_synthesis(
@@ -17,14 +17,17 @@ def generate_company_synthesis(
     """Produce an evidence-grounded, multi-section synthesis of a company's intelligence profile.
 
     Sections:
-    1. Core Activities & Purpose
-    2. Legal Identity & Operating Locations
-    3. Financial & Workforce Profile
-    4. Leadership & Governance
-    5. Public Activity & Vacancies
-    6. Profile Updates & State Changes
-    7. Unknowns & Information Gaps
-    8. Supporting Evidence & Provenance
+    1. Executive Summary & Core Activity
+    2. Legal Identity & Business Locations
+    3. Financial Performance & Annual Accounts
+    4. Workforce & Employment Profile
+    5. Leadership & Governance
+    6. Verified Company News & Corporate Announcements
+    7. Open Job Postings & Career Opportunities
+    8. Official Social Media Channels (Verified Exact Entity)
+    9. Profile Changes & Historical Audit
+    10. Key Information Gaps & Unknowns
+    11. Evidence Traceability & Grounding
     """
     sections: list[str] = []
 
@@ -85,7 +88,7 @@ def generate_company_synthesis(
     )
     sections.append(identity_text)
 
-    # 3. Financial & Workforce Profile
+    # 3. Financial Performance
     fin = profile.financials
     fin_lines: list[str] = []
     if fin and any(
@@ -96,6 +99,7 @@ def generate_company_synthesis(
             fin.net_income,
             fin.total_assets,
             fin.total_equity,
+            fin.total_liabilities,
         ]
     ):
         period_str = f"{fin.period_start or '?'} to {fin.period_end or '?'}"
@@ -125,22 +129,34 @@ def generate_company_synthesis(
             fin_lines.append(f"- **Total Equity (Egenkapital)**: {fin.total_equity:,.0f}{curr_label}{units_note}")
         if fin.total_liabilities is not None:
             fin_lines.append(f"- **Total Liabilities (Gjeld)**: {fin.total_liabilities:,.0f}{curr_label}{units_note}")
+        if fin.total_assets is not None and fin.total_equity is not None and fin.total_liabilities is not None:
+            eq_plus_liab = fin.total_equity + fin.total_liabilities
+            diff = abs(fin.total_assets - eq_plus_liab)
+            if diff < 1.0:
+                fin_lines.append(f"- **Balance Sheet Integrity**: Verified ($Assets = Equity + Liabilities$)")
     else:
         fin_lines.append("- **Annual Accounts**: Financial statements are not available in Regnskapsregisteret.")
 
+    fin_text = "### 3. Financial Performance & Annual Accounts\n" + "\n".join(fin_lines)
+    sections.append(fin_text)
+
+    # 4. Workforce & Employment Profile
+    work_lines: list[str] = []
     emp_str = (
         f"{profile.employee_count} registered employees"
         if profile.employee_count is not None
         else "Not available in public records"
     )
-    fin_lines.append(f"- **Workforce Count**: {emp_str}")
+    work_lines.append(f"- **Workforce Count**: {emp_str}")
+    if profile.has_registered_employees is not None:
+        work_lines.append(f"- **Registered Employees in NAV Aa-registeret**: {'Yes' if profile.has_registered_employees else 'No'}")
     if profile.group_workforce is not None:
-        fin_lines.append(f"- **Group-Wide Global Workforce**: ~{profile.group_workforce:,} employees")
+        work_lines.append(f"- **Group-Wide Global Workforce**: ~{profile.group_workforce:,} employees")
 
-    fin_text = "### 3. Financial Performance & Employment\n" + "\n".join(fin_lines)
-    sections.append(fin_text)
+    work_text = "### 4. Workforce & Employment Profile\n" + "\n".join(work_lines)
+    sections.append(work_text)
 
-    # 4. Leadership & Governance (Strictly fact-grounded)
+    # 5. Leadership & Governance (Strictly fact-grounded)
     lead_lines: list[str] = []
     ceo_fact = profile.facts.get("ceo_name")
     chair_fact = profile.facts.get("board_chair")
@@ -162,66 +178,121 @@ def generate_company_synthesis(
     if not lead_lines:
         lead_lines.append("- **Registered Roles**: Key officer roles are not recorded in official register.")
 
-    lead_text = "### 4. Leadership & Governance\n" + "\n".join(lead_lines)
+    lead_text = "### 5. Leadership & Governance\n" + "\n".join(lead_lines)
     sections.append(lead_text)
 
-    # 5. Public Activity, Web & Vacancies
-    pub_lines: list[str] = []
-    if profile.website:
-        pub_lines.append(f"- **Official Website**: {profile.website}")
-    if profile.email:
-        pub_lines.append(f"- **Contact Email**: {profile.email}")
-    if profile.phone:
-        pub_lines.append(f"- **Contact Phone**: {profile.phone}")
-
-    if profile.online_presence and profile.online_presence.is_identity_verified and profile.online_presence.active_jobs:
-        job_titles = [f"`{j.get('title')}`" for j in profile.online_presence.active_jobs[:3]]
-        pub_lines.append(f"- **Open Job Vacancies**: {', '.join(job_titles)}")
-
+    # 6. Verified Company News & Corporate Announcements
+    news_lines: list[str] = []
     news_fact = profile.facts.get("news_articles")
+    news_items = getattr(profile, "news_items", [])
+
     if news_fact and isinstance(news_fact.value, list) and news_fact.value:
-        pub_lines.append("- **Verified News & Corporate Announcements**:")
-        for item in news_fact.value[:3]:
+        news_lines.append("- **Verified News & Corporate Announcements**:")
+        for item in news_fact.value[:5]:
             if isinstance(item, dict):
                 title = item.get("title") or item.get("headline")
                 url = item.get("url")
                 date = item.get("date") or item.get("publication_date")
                 date_str = f" ({date})" if date else ""
+                pub = item.get("publisher")
+                pub_str = f" — *{pub}*" if pub else ""
                 if url:
-                    pub_lines.append(f"  - [{title}]({url}){date_str}")
+                    news_lines.append(f"  - [{title}]({url}){date_str}{pub_str}")
                 else:
-                    pub_lines.append(f"  - {title}{date_str}")
+                    news_lines.append(f"  - {title}{date_str}{pub_str}")
+    elif news_items:
+        news_lines.append("- **Verified News & Corporate Announcements**:")
+        for item in news_items[:5]:
+            title = item.headline if hasattr(item, "headline") else item.get("headline", item.get("title", ""))
+            url = item.canonical_url if hasattr(item, "canonical_url") else item.get("canonical_url", item.get("url", ""))
+            date = item.publication_date if hasattr(item, "publication_date") else item.get("publication_date", item.get("date"))
+            date_str = f" ({date})" if date else ""
+            if url:
+                news_lines.append(f"  - [{title}]({url}){date_str}")
+            else:
+                news_lines.append(f"  - {title}{date_str}")
     else:
         ann_fact = profile.facts.get("public_announcements")
         if ann_fact and ann_fact.value:
-            pub_lines.append("- **Verified News & Corporate Announcements**:")
-            for h in ann_fact.value[:3]:
-                pub_lines.append(f"  - \"{h}\"")
+            news_lines.append("- **Verified News & Corporate Announcements**:")
+            for h in ann_fact.value[:5]:
+                news_lines.append(f"  - \"{h}\"")
         elif profile.online_presence and profile.online_presence.announcements:
-            pub_lines.append("- **Verified News & Corporate Announcements**:")
-            for item in profile.online_presence.announcements[:3]:
+            news_lines.append("- **Verified News & Corporate Announcements**:")
+            for item in profile.online_presence.announcements[:5]:
                 title = item.get("title") or item.get("headline")
                 url = item.get("url")
                 date = item.get("publication_date") or item.get("date")
                 date_str = f" ({date})" if date else ""
                 if url:
-                    pub_lines.append(f"  - [{title}]({url}){date_str}")
+                    news_lines.append(f"  - [{title}]({url}){date_str}")
                 else:
-                    pub_lines.append(f"  - {title}{date_str}")
+                    news_lines.append(f"  - {title}{date_str}")
+        else:
+            news_lines.append(
+                "- **Verified News & Corporate Announcements**: Information on website, job postings, or announcements is not available from verified sources."
+            )
 
-    if not pub_lines:
-        pub_lines.append(
-            "- **Public Web Presence**: Information on website, job postings, or announcements is not available from verified sources."
+    news_text = "### 6. Verified Company News & Corporate Announcements\n" + "\n".join(news_lines)
+    sections.append(news_text)
+
+    # 7. Open Job Postings & Career Opportunities
+    job_lines: list[str] = []
+    if profile.has_explicit_zero_vacancies:
+        job_lines.append("- **Open Job Postings**: Selskapets offisielle karriereside bekrefter 0 ledige stillinger (ingen ledige stillinger).")
+    elif getattr(profile, "job_postings", None):
+        for jp in profile.job_postings[:5]:
+            title = jp.title if hasattr(jp, "title") else jp.get("title", "")
+            url = jp.canonical_url if hasattr(jp, "canonical_url") else jp.get("canonical_url", jp.get("url", ""))
+            loc = jp.location if hasattr(jp, "location") else jp.get("location")
+            loc_str = f" — {loc}" if loc else ""
+            deadline = jp.application_deadline if hasattr(jp, "application_deadline") else jp.get("application_deadline")
+            dl_str = f" (Frist: {deadline})" if deadline else ""
+            status_val = jp.status.value if hasattr(jp, "status") and hasattr(jp.status, "value") else str(jp.get("status", "open")).upper()
+            if url:
+                job_lines.append(f"- [{title}]({url}){loc_str}{dl_str} `[{status_val}]`")
+            else:
+                job_lines.append(f"- {title}{loc_str}{dl_str} `[{status_val}]`")
+    elif profile.online_presence and profile.online_presence.active_jobs:
+        for j in profile.online_presence.active_jobs[:5]:
+            t = j.get("title", "")
+            u = j.get("canonical_url") or j.get("url", "")
+            if u:
+                job_lines.append(f"- [{t}]({u}) `[OPEN]`")
+            else:
+                job_lines.append(f"- {t} `[OPEN]`")
+    else:
+        job_lines.append("- **Open Job Postings**: No active career listings or vacancies published on verified corporate channels.")
+
+    job_text = "### 7. Open Job Postings & Career Opportunities\n" + "\n".join(job_lines)
+    sections.append(job_text)
+
+    # 8. Official Social Media Channels (Strictly Verified Exact Entity)
+    soc_lines: list[str] = []
+    verified_socials = [
+        s for s in getattr(profile, "social_links", [])
+        if s.get("is_verified") or s.get("status") == "verified"
+    ]
+    if verified_socials:
+        for s in verified_socials:
+            plat = s.get("platform", "Social").title()
+            s_url = s.get("url", "")
+            handle = s.get("handle")
+            handle_str = f" (`@{handle}`)" if handle else ""
+            soc_lines.append(f"- **{plat}**: [{s_url}]({s_url}){handle_str} *(Verified Exact Entity)*")
+    else:
+        soc_lines.append(
+            "- **Official Social Channels**: No verified exact-entity corporate social accounts identified "
+            "(parent, subsidiary, personal, and third-party handles excluded)."
         )
 
-    pub_text = "### 5. Verified Public Activity & Presence\n" + "\n".join(pub_lines)
-    sections.append(pub_text)
+    soc_text = "### 8. Official Social Media Channels (Verified Exact Entity)\n" + "\n".join(soc_lines)
+    sections.append(soc_text)
 
-    # 6. Significant Changes Since Previous Profile
+    # 9. Profile Changes & Historical Audit
     history = audit_history or profile.change_history
     history_lines: list[str] = []
     if history:
-        # Show most recent changes first so latest fact updates are prominently grounded
         non_unchanged = [entry for entry in history if entry.change_type != FactStatus.UNCHANGED]
         for entry in reversed(non_unchanged[-5:]):
             history_lines.append(
@@ -230,10 +301,10 @@ def generate_company_synthesis(
     if not history_lines:
         history_lines.append("- **Baseline State**: No subsequent modifications detected since initial verification.")
 
-    changes_text = "### 6. Profile Changes & Historical Audit\n" + "\n".join(history_lines[:5])
+    changes_text = "### 9. Profile Changes & Historical Audit\n" + "\n".join(history_lines[:5])
     sections.append(changes_text)
 
-    # 7. Important Information Gaps (Explicit Unknowns without speculation)
+    # 10. Important Information Gaps (Explicit Unknowns without speculation)
     unknowns: list[str] = []
     if profile.employee_count is None:
         unknowns.append("Employee count is unrecorded / not available in public registry records.")
@@ -269,11 +340,10 @@ def generate_company_synthesis(
     if not unknowns:
         unknowns.append("Primary corporate registration, leadership, financial filing, and official website dimensions are verified from official sources.")
 
-    gaps_text = "### 7. Key Information Gaps & Unknowns\n" + "\n".join(f"- {u}" for u in unknowns)
+    gaps_text = "### 10. Key Information Gaps & Unknowns\n" + "\n".join(f"- {u}" for u in unknowns)
     sections.append(gaps_text)
 
-    # 8. Evidence & Provenance Traceability
-    # Group structured facts by their unique verified source URL to eliminate duplicate labels for identical endpoints
+    # 11. Evidence & Provenance Traceability
     facts_by_url: dict[str, list[ProvenanceFact]] = {}
     for f in profile.facts.values():
         if f.source_url:
@@ -286,7 +356,6 @@ def generate_company_synthesis(
     indep_verified_urls = {u for u in facts_by_url if u not in dataset_urls}
 
     evidence_lines: list[str] = []
-    # Display independently verified live sources first, then supplied dataset
     sorted_urls = sorted(indep_verified_urls) + sorted(dataset_urls)
     for s_url in sorted_urls:
         f_list = facts_by_url[s_url]
@@ -314,7 +383,7 @@ def generate_company_synthesis(
         source_summary = f"{indep_count} verified sources"
 
     evidence_text = (
-        f"### 8. Evidence Traceability & Grounding\n"
+        f"### Evidence Traceability & Grounding\n"
         f"Verified against {total_facts} structured evidentiary facts across {source_summary} "
         f"({total_consulted} source records consulted; sum of extracted facts: {total_facts}):\n"
         + "\n".join(evidence_lines[:10])

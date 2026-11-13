@@ -3,8 +3,11 @@
 from src.models.company import (
     Address,
     CompanyFinancials,
+    CompanyNewsItem,
     CompanyOfficer,
     CompanyProfile,
+    JobPosting,
+    JobStatus,
     OnlinePresence,
 )
 from src.models.dataset import DatasetRecord
@@ -15,4 +18,4 @@ from src.models.evidence import (
     ProvenanceFact,
     ResearchOutcome,
 )
-from src.models.result import CompanyResultEnvelope, SourceConsulted
+from src.models.result import CompanyResultEnvelope, SourceConsulted, validate_envelope_schema

@@ -33,6 +33,16 @@ class WebsiteOwnershipStatus(str, Enum):
     UNVERIFIED = "unverified"
 
 
+class EntityOwnershipClassification(str, Enum):
+    """Authoritative 6-state entity ownership classification for Builderr competition compliance."""
+    VERIFIED_EXACT_ENTITY = "VERIFIED_EXACT_ENTITY"
+    VERIFIED_OFFICIAL_PARENT = "VERIFIED_OFFICIAL_PARENT"
+    VERIFIED_SUBSIDIARY = "VERIFIED_SUBSIDIARY"
+    POSSIBLE_MATCH = "POSSIBLE_MATCH"
+    UNVERIFIED = "UNVERIFIED"
+    REJECTED_WRONG_ENTITY = "REJECTED_WRONG_ENTITY"
+
+
 class SocialAccountStatus(str, Enum):
     """Classification of discovered social media accounts."""
     VERIFIED = "verified"
@@ -41,6 +51,7 @@ class SocialAccountStatus(str, Enum):
     TEMPLATE = "template"
     UNVERIFIED = "unverified"
     INVALID = "invalid"
+    WRONG_ENTITY = "wrong_entity"
 
 
 class NewsValidationStatus(str, Enum):
@@ -70,10 +81,14 @@ class SocialAccountVerificationResult:
     ownership_classification: str
     evidence: str
     rejection_reason: str | None = None
+    classification: EntityOwnershipClassification = EntityOwnershipClassification.UNVERIFIED
 
     @property
     def is_verified(self) -> bool:
-        return self.status == SocialAccountStatus.VERIFIED
+        return (
+            self.status == SocialAccountStatus.VERIFIED
+            and self.classification == EntityOwnershipClassification.VERIFIED_EXACT_ENTITY
+        )
 
 
 
@@ -228,11 +243,22 @@ NAVIGATION_TOKENS = {
 }
 
 
-def is_credible_business_description(text: str | None) -> bool:
+def is_credible_business_description(text: str | None, is_statutory: bool = False) -> bool:
     """Validate whether candidate text represents a genuine corporate description rather than navigation or boilerplate."""
     if not text:
         return False
     clean = text.strip()
+    if is_statutory:
+        # Statutory purpose text directly from Brønnøysundregistrene (e.g., "Holdingselskap.", "Arkitekttjenester.")
+        # represents authoritative statutory activity and should be accepted if non-empty and non-boilerplate.
+        if len(clean) < 4:
+            return False
+        clean_lower = clean.lower()
+        for pat in BOILERPLATE_SUBSTRING_PATTERNS:
+            if re.search(pat, clean_lower):
+                return False
+        return True
+
     if len(clean) < 30:
         return False
 
@@ -585,6 +611,20 @@ def classify_social_account(
             rejection_reason="URL is a generic sharing button or platform root, not a specific corporate account",
         )
 
+    # Check for personal individual / owner profiles on LinkedIn (/in/) or Facebook
+    if platform == "linkedin" and "/in/" in parsed.path.lower():
+        pers_handle = parsed.path.strip("/").split("/")[-1].split("?")[0]
+        return SocialAccountVerificationResult(
+            platform=platform,
+            url=url,
+            handle=pers_handle,
+            status=SocialAccountStatus.UNVERIFIED,
+            ownership_classification="unverified",
+            evidence=f"Personal individual profile detected: '{url}'",
+            rejection_reason="URL represents an individual person or personal profile (/in/), not an official corporate legal entity account",
+            classification=EntityOwnershipClassification.UNVERIFIED,
+        )
+
     handle = _extract_account_handle(platform, parsed.path)
     if not handle:
         return SocialAccountVerificationResult(
@@ -628,9 +668,97 @@ def classify_social_account(
             ownership_classification="third_party",
             evidence=f"Theme/CMS vendor detection: handle='{handle}'",
             rejection_reason=f"Account belongs to website theme or CMS platform, not researched company",
+            classification=EntityOwnershipClassification.REJECTED_WRONG_ENTITY,
         )
 
-    # 3. Check for parent-group account inheritance
+    # 3. Check for personal individual / owner profiles (e.g. linkedin.com/in/person)
+    if platform == "linkedin" and "/in/" in parsed.path.lower():
+        return SocialAccountVerificationResult(
+            platform=platform,
+            url=url,
+            handle=handle,
+            status=SocialAccountStatus.UNVERIFIED,
+            ownership_classification="unverified",
+            evidence=f"Personal individual profile detected: handle='{handle}'",
+            rejection_reason="URL represents an individual person or personal profile, not a verified corporate legal entity account",
+            classification=EntityOwnershipClassification.UNVERIFIED,
+        )
+
+    # 4. Sibling / Distinct Legal Entity Sector Conflict Check
+    # Distinguishes separate legal entities owned by the same person or family
+    # (e.g., ROGER AAMODT BYGG AS [construction] vs Roger Aamodt Eiendom AS [real estate])
+    SECTOR_WORD_FAMILIES = {
+        "bygg": {"bygg", "byggmester", "entreprenor", "construction", "byggefirma"},
+        "eiendom": {"eiendom", "realestate", "property", "bolig", "utleie", "eiendommer"},
+        "invest": {"invest", "investering", "capital", "venture"},
+        "holding": {"holding", "holdings"},
+        "drift": {"drift", "operations"},
+        "forvaltning": {"forvaltning", "management"},
+        "konsulent": {"konsulent", "consulting", "advisory"},
+        "consulting": {"konsulent", "consulting", "advisory"},
+        "transport": {"transport", "logistikk", "shipping", "spedisjon"},
+        "regnskap": {"regnskap", "accounting"},
+        "revisjon": {"revisjon", "audit"},
+        "advokat": {"advokat", "law", "legal"},
+        "elektro": {"elektro", "elektrisk", "electrical"},
+        "ror": {"ror", "vvs", "plumbing"},
+        "vvs": {"ror", "vvs", "plumbing"},
+        "arkitekt": {"arkitekt", "architecture"},
+        "media": {"media", "reklame", "kommunikasjon"},
+        "energi": {"energi", "energy", "kraft", "power"},
+        "sikkerhet": {"sikkerhet", "security"},
+    }
+
+    norm_handle_clean = re.sub(r"[_\-.]", "", handle_lower)
+    if expected_name:
+        expected_name_lower = expected_name.lower()
+        target_sectors = set()
+        for sec_name, sec_words in SECTOR_WORD_FAMILIES.items():
+            if any(w in expected_name_lower.split() for w in sec_words):
+                target_sectors.add(sec_name)
+
+        # Check if handle contains conflicting sector keywords
+        for sec_name, sec_words in SECTOR_WORD_FAMILIES.items():
+            if sec_name not in target_sectors:
+                for w in sec_words:
+                    if len(w) >= 4 and w in norm_handle_clean:
+                        if target_sectors:
+                            # Direct conflict detected between target sector and handle sector
+                            target_str = ", ".join(target_sectors)
+                            return SocialAccountVerificationResult(
+                                platform=platform,
+                                url=url,
+                                handle=handle,
+                                status=SocialAccountStatus.WRONG_ENTITY,
+                                ownership_classification="rejected_wrong_entity",
+                                evidence=f"Sibling entity conflict: handle '{handle}' contains '{w}' ({sec_name}), conflicting with target sector ({target_str})",
+                                rejection_reason=(
+                                    f"Handle '{handle}' belongs to separate sibling legal entity ({sec_name}) "
+                                    f"distinct from target company sector ({target_str})"
+                                ),
+                                classification=EntityOwnershipClassification.REJECTED_WRONG_ENTITY,
+                            )
+
+    # 5. Global Parent / Multinational Brand Account Check
+    # (e.g., OTIS AS [Norwegian subsidiary] vs Otis Elevator Company [global parent])
+    GLOBAL_PARENT_TERMS = [
+        "elevatorco", "elevatorcompany", "worldwide", "global", "corporation",
+        "international", "americas", "usa", "europe", "hq", "headquarters",
+    ]
+    is_global_parent_handle = any(term in norm_handle_clean for term in GLOBAL_PARENT_TERMS)
+    if is_global_parent_handle:
+        return SocialAccountVerificationResult(
+            platform=platform,
+            url=url,
+            handle=handle,
+            status=SocialAccountStatus.PARENT_GROUP,
+            ownership_classification="parent_group",
+            evidence=f"Global corporate parent indicator in handle: '{handle}'",
+            rejection_reason=f"Account belongs to global parent corporation rather than local Norwegian legal entity '{expected_name or 'N/A'}'",
+            classification=EntityOwnershipClassification.VERIFIED_OFFICIAL_PARENT,
+        )
+
+    # 6. Check for parent-group account inheritance on group sites
     if is_parent_group_site and expected_name:
         expected_tokens = _clean_company_name_tokens(expected_name)
         if len(expected_tokens) > 1:
@@ -648,15 +776,34 @@ def classify_social_account(
                 ownership_classification="parent_group",
                 evidence=f"Parent group site inheritance: handle='{handle}' on group domain",
                 rejection_reason=f"Account belongs to parent group rather than researched company '{expected_name}'",
+                classification=EntityOwnershipClassification.VERIFIED_OFFICIAL_PARENT,
             )
 
-    # 4. Identity matching against company name and official source linkage
+    # 7. Identity matching against company name and official source linkage
     if expected_name:
         expected_tokens = _clean_company_name_tokens(expected_name)
         norm_handle = re.sub(r"[_\-.]", "", handle_lower)
         matches_token = any(tok in norm_handle for tok in expected_tokens if len(tok) >= 3)
 
         if matches_token:
+            # If target has a distinguishing sector word, require that handle matches it or does not conflict
+            if len(expected_tokens) >= 3:
+                # E.g. ["roger", "aamodt", "bygg"] - if handle only matches person name without activity
+                distinguishing = expected_tokens[-1]  # usually sector or differentiator
+                if len(distinguishing) >= 4 and distinguishing in ["bygg", "eiendom", "invest", "drift", "transport"]:
+                    if distinguishing not in norm_handle:
+                        # Ambiguous match (e.g. rogeraamodt without bygg)
+                        return SocialAccountVerificationResult(
+                            platform=platform,
+                            url=url,
+                            handle=handle,
+                            status=SocialAccountStatus.UNVERIFIED,
+                            ownership_classification="unverified",
+                            evidence=f"Handle '{handle}' matches owner name but lacks distinguishing corporate descriptor ('{distinguishing}')",
+                            rejection_reason=f"Handle lacks company differentiator '{distinguishing}'; uncertain legal entity ownership",
+                            classification=EntityOwnershipClassification.POSSIBLE_MATCH,
+                        )
+
             if is_linked_from_official_website:
                 return SocialAccountVerificationResult(
                     platform=platform,
@@ -664,7 +811,8 @@ def classify_social_account(
                     handle=handle,
                     status=SocialAccountStatus.VERIFIED,
                     ownership_classification="company_owned_or_official",
-                    evidence=f"Account confirmed via outbound link from verified official corporate website; handle '{handle}' matches company name '{expected_name}'",
+                    evidence=f"Account confirmed via outbound link from verified official corporate website; handle '{handle}' matches company name '{expected_name}' with verified exact ownership",
+                    classification=EntityOwnershipClassification.VERIFIED_EXACT_ENTITY,
                 )
             else:
                 return SocialAccountVerificationResult(
@@ -675,6 +823,7 @@ def classify_social_account(
                     ownership_classification="unverified",
                     evidence=f"Handle '{handle}' matches company name '{expected_name}', but account is not confirmed by an outbound link from a verified corporate website",
                     rejection_reason="Name match alone without verified corporate website linkage or official registry confirmation is insufficient proof of account ownership",
+                    classification=EntityOwnershipClassification.UNVERIFIED,
                 )
 
     # If handle does not clearly match company name, mark unverified
@@ -686,6 +835,7 @@ def classify_social_account(
         ownership_classification="unverified",
         evidence=f"Handle '{handle}' has ambiguous correspondence with company name '{expected_name}'",
         rejection_reason=f"Handle '{handle}' could not be definitively verified as belonging to '{expected_name}'",
+        classification=EntityOwnershipClassification.UNVERIFIED,
     )
 
 

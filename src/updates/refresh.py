@@ -21,6 +21,24 @@ from src.validation.identity import parse_and_verify_orgnr, validate_orgnr
 logger = logging.getLogger(__name__)
 
 
+def are_fact_values_equal(v1: Any, v2: Any) -> bool:
+    """Check semantic equality of two fact values, ignoring trivial formatting differences."""
+    if v1 == v2:
+        return True
+    if v1 is None or v2 is None:
+        return False
+    if isinstance(v1, str) and isinstance(v2, str):
+        return v1.strip() == v2.strip()
+    if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+        return abs(float(v1) - float(v2)) < 1e-6
+    if isinstance(v1, list) and isinstance(v2, list):
+        if len(v1) != len(v2):
+            return False
+        if all(isinstance(x, str) for x in v1) and all(isinstance(x, str) for x in v2):
+            return [x.strip() for x in v1] == [x.strip() for x in v2]
+    return False
+
+
 def detect_fact_changes(
     old_profile: CompanyProfile,
     new_profile: CompanyProfile,
@@ -32,6 +50,7 @@ def detect_fact_changes(
     - Never overwrite verified facts with unsupported guesses.
     - Preserve change history in an immutable audit trail.
     - Detect NEW, CHANGED, UNCHANGED, CONFLICTING, and UNAVAILABLE facts.
+    - Preserve first_observed_at and retain historical evidence without overwriting.
     """
     now_utc = datetime.now(timezone.utc)
     changes: list[FactChangeRecord] = []
@@ -59,7 +78,7 @@ def detect_fact_changes(
         old_fact = old_profile.facts[key]
         new_fact = new_profile.facts[key]
 
-        if old_fact.value != new_fact.value:
+        if not are_fact_values_equal(old_fact.value, new_fact.value):
             # 1. Financial protection rules
             if old_fact.category == FactCategory.FINANCIAL or key in (
                 "total_revenue", "operating_revenue", "operating_profit", "net_income",
@@ -134,7 +153,23 @@ def detect_fact_changes(
                     )
                     continue
 
-            # Legitimate change
+            # Legitimate change: preserve first_observed_at and retain historical evidence
+            new_fact.first_observed_at = getattr(old_fact, "first_observed_at", new_fact.first_observed_at)
+            new_fact.last_verified_at = now_utc
+            prior_hist = getattr(old_fact, "historical_values", [])
+            obs_time = getattr(old_fact, "first_observed_at", now_utc)
+            obs_iso = obs_time.isoformat() if hasattr(obs_time, "isoformat") else str(obs_time)
+            new_fact.historical_values = prior_hist + [
+                {
+                    "value": old_fact.value,
+                    "source_url": old_fact.source_url,
+                    "source_type": getattr(old_fact, "source_type", "unknown"),
+                    "evidence_snippet": getattr(old_fact, "evidence_snippet", None),
+                    "first_observed_at": obs_iso,
+                    "superseded_at": now_utc.isoformat(),
+                }
+            ]
+
             change_type = FactStatus.CHANGED
             explanation = (
                 f"Fact '{key}' updated from '{old_fact.value}' to '{new_fact.value}' "
@@ -152,6 +187,11 @@ def detect_fact_changes(
                 )
             )
         else:
+            # Fact verified unchanged: retain observation timestamp and update verification timestamp
+            new_fact.first_observed_at = getattr(old_fact, "first_observed_at", new_fact.first_observed_at)
+            new_fact.last_verified_at = now_utc
+            new_fact.historical_values = getattr(old_fact, "historical_values", [])
+
             changes.append(
                 FactChangeRecord(
                     fact_key=key,

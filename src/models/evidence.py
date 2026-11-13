@@ -74,6 +74,10 @@ class ProvenanceFact(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc),
         description="When this fact was most recently checked against the source",
     )
+    last_verified_at: datetime | None = Field(
+        default=None,
+        description="When this fact was most recently verified against the source",
+    )
     publication_date: str | None = Field(
         default=None,
         description="Official publication or registration date of this fact (e.g. '2024-03-15')",

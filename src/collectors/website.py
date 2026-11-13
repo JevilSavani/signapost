@@ -8,7 +8,9 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 
 from src.models.company import OnlinePresence
+from src.collectors.jobs import JobPostingCollector
 from src.utils.http_client import http_client
+from src.utils.sanitization import SUSPICIOUS_PATTERNS, sanitize_untrusted_web_content
 from src.validation.ownership import (
     EVENT_OR_CALENDAR_URL_PATTERNS,
     EVENT_TITLE_PATTERNS,
@@ -22,27 +24,6 @@ from src.validation.ownership import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Prompt injection markers commonly used in adversarial webpage payloads
-SUSPICIOUS_PATTERNS = [
-    r"ignore\s+(all\s+)?(previous|prior)\s+instructions",
-    r"system\s*:\s*",
-    r"you\s+are\s+now\s+in\s+developer\s+mode",
-    r"output\s+the\s+system\s+prompt",
-    r"<\|\s*im_start\s*\|>",
-    r"<\|\s*endoftext\s*\|>",
-]
-
-
-def sanitize_untrusted_web_content(text: str) -> str:
-    """Sanitize scraped web content to neutralize prompt injection vectors."""
-    cleaned = text
-    for pattern in SUSPICIOUS_PATTERNS:
-        cleaned = re.sub(pattern, "[BLOCKED_INJECTION_PATTERN]", cleaned, flags=re.IGNORECASE)
-    # Collapse multiple whitespaces and control characters
-    cleaned = re.sub(r"[\r\n\t]+", " ", cleaned)
-    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
-    return cleaned[:1000]  # Bounded length to prevent token-exhaustion DOS
 
 
 class WebsiteCollector:
@@ -269,33 +250,36 @@ class WebsiteCollector:
             active_jobs: list[dict[str, Any]] = []
             announcements: list[dict[str, Any]] = []
             news_items: list[dict[str, Any]] = []
+            has_explicit_zero_vacancies = False
 
             # Discover and crawl bounded subpages if enabled
             if crawl_subpages and is_verified:
                 subpages = self._discover_subpages(soup, norm_url)
 
-                # Careers / Jobs subpage
-                if "careers" in subpages:
-                    careers_url = subpages["careers"]
-                    try:
-                        c_resp = self.client.get(careers_url, use_cache=True)
-                        if c_resp.status_code == 200:
-                            c_soup = BeautifulSoup(c_resp.text, "html.parser")
-                            for a in c_soup.find_all("a", href=True)[:10]:
-                                text = a.get_text(strip=True)
-                                if len(text) > 8 and any(
-                                    w in text.lower()
-                                    for w in [
-                                        "leder", "ingeniør", "utvikler", "konsulent",
-                                        "stilling", "rådgiver", "manager", "developer", "engineer"
-                                    ]
-                                ):
-                                    clean_job = sanitize_untrusted_web_content(text)
-                                    active_jobs.append({"title": clean_job, "url": careers_url})
-                                    if len(active_jobs) >= 5:
-                                        break
-                    except Exception:
-                        pass
+                # Careers / Jobs subpage via JobPostingCollector
+                job_collector = JobPostingCollector(client=self.client)
+                extracted_jobs, zero_vac = job_collector.collect_jobs(
+                    orgnr=expected_orgnr or "",
+                    company_name=expected_name or "",
+                    website_url=norm_url,
+                    is_parent_group=verif_res.is_parent_group,
+                    subpages=subpages,
+                    max_items=6,
+                )
+                has_explicit_zero_vacancies = zero_vac
+                for job in extracted_jobs:
+                    active_jobs.append({
+                        "title": job.title,
+                        "url": job.canonical_url,
+                        "canonical_url": job.canonical_url,
+                        "location": job.location,
+                        "posting_date": job.posting_date,
+                        "deadline": job.application_deadline,
+                        "application_deadline": job.application_deadline,
+                        "status": job.status.value,
+                        "evidence": job.evidence,
+                        "is_verified": True,
+                    })
 
                 # News / Announcements subpage
                 crawled_news_url = None
@@ -439,6 +423,7 @@ class WebsiteCollector:
                 ownership_reasoning=verif_res.reasoning,
                 declared_orgnr=verif_res.declared_orgnr,
                 is_identity_verified=is_verified,
+                has_explicit_zero_vacancies=has_explicit_zero_vacancies,
                 crawled_news_url=crawled_news_url,
                 crawled_subpages=subpages if (crawl_subpages and is_verified) else {},
             )

@@ -68,6 +68,12 @@ def main() -> None:
         description="Signalpost — Norwegian Company Intelligence Agent (Builderr Challenge)"
     )
     parser.add_argument(
+        "input_pos",
+        nargs="?",
+        metavar="INPUT_FILE",
+        help="Optional positional path to input batch file",
+    )
+    parser.add_argument(
         "--orgnr",
         type=str,
         help="Norwegian 9-digit company registration number (or comma-separated list) to research",
@@ -88,9 +94,22 @@ def main() -> None:
     )
     parser.add_argument(
         "--format",
-        choices=["json", "jsonl", "envelope", "summary", "text"],
+        choices=["json", "jsonl", "envelope", "summary", "text", "html"],
         default="json",
         help="Output format (default: json)",
+    )
+    parser.add_argument(
+        "--ui",
+        "--serve",
+        dest="serve_ui",
+        action="store_true",
+        help="Launch the interactive Signalpost Web UI dashboard and API server on http://127.0.0.1:8000",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port for Signalpost Web UI (default: 8000)",
     )
     parser.add_argument(
         "--concurrency",
@@ -145,6 +164,11 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if getattr(args, "serve_ui", False):
+        from src.ui.app import run_server
+        run_server(port=args.port)
+        return
+
     if args.status:
         count = company_repository.count_profiles()
         metrics = global_budget.get_summary()
@@ -189,11 +213,12 @@ def main() -> None:
         return
 
     # Batch file research
-    if args.input_batch:
+    batch_target = args.input_batch or getattr(args, "input_pos", None)
+    if batch_target:
         try:
-            identifiers = load_input_identifiers(args.input_batch)
+            identifiers = load_input_identifiers(batch_target)
         except Exception as exc:
-            sys.stderr.write(f"Error: Failed to read batch input file '{args.input_batch}': {exc}\n")
+            sys.stderr.write(f"Error: Failed to read batch input file '{batch_target}': {exc}\n")
             sys.exit(1)
 
         workers = max(1, min(args.concurrency, 10))
@@ -202,6 +227,26 @@ def main() -> None:
             crawl_website=not args.no_website,
             max_workers=workers,
         )
+
+        # Validate every output against competition schema
+        from src.models.result import validate_envelope_schema
+        for idx, env in enumerate(envelopes):
+            is_valid, schema_errors = validate_envelope_schema(env)
+            if not is_valid:
+                logger.warning("Schema warning on item %d (%s): %s", idx, env.organisation_number, schema_errors)
+
+        if args.format == "html" or (args.output and Path(args.output).suffix.lower() == ".html"):
+            from src.ui.export_html import generate_standalone_html_report
+            combined_html = "\n<hr/>\n".join(generate_standalone_html_report(e) for e in envelopes)
+            if args.output:
+                out_path = Path(args.output)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write(combined_html)
+                sys.stderr.write(f"Batch completed: Saved {len(envelopes)} HTML reports to {args.output}\n")
+            else:
+                print(combined_html)
+            return
 
         if args.output:
             out_path = Path(args.output)
@@ -215,7 +260,6 @@ def main() -> None:
                     else:
                         for e in envelopes:
                             f.write(e.model_dump_json() + "\n")
-                # Atomic replacement
                 tmp_path.replace(out_path)
             except Exception as write_err:
                 if tmp_path and tmp_path.exists():
@@ -225,12 +269,12 @@ def main() -> None:
 
             sys.stderr.write(f"Batch completed: Saved {len(envelopes)} results to {args.output}\n")
         else:
-            if args.format == "json" or args.format == "envelope":
+            if args.format in ("json", "envelope"):
                 print(json.dumps([e.model_dump(mode="json") for e in envelopes], indent=2, ensure_ascii=False))
             elif args.format == "jsonl":
                 for e in envelopes:
                     print(e.model_dump_json())
-            elif args.format == "summary" or args.format == "text":
+            elif args.format in ("summary", "text"):
                 for e in envelopes:
                     status_indicator = "[green]AVAILABLE[/green]" if e.outcome.value == "available" else f"[yellow]{e.outcome.value.upper()}[/yellow]"
                     console.print(f"{status_indicator} {e.organisation_number}: {e.name or 'N/A'}")
@@ -257,6 +301,17 @@ def main() -> None:
             if args.output:
                 with open(args.output, "w", encoding="utf-8") as f:
                     f.write(envelope.model_dump_json(indent=2))
+
+            if args.format == "html":
+                from src.ui.export_html import generate_standalone_html_report
+                html_out = generate_standalone_html_report(envelope)
+                if args.output:
+                    with open(args.output, "w", encoding="utf-8") as f:
+                        f.write(html_out)
+                    console.print(f"[bold green]Standalone HTML report saved to {args.output}[/bold green]")
+                else:
+                    print(html_out)
+                return
 
             if args.format == "json" or args.format == "envelope":
                 print(envelope.model_dump_json(indent=2))

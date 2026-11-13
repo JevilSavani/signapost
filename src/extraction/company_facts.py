@@ -8,13 +8,20 @@ from typing import Any
 from src.models.company import (
     Address,
     CompanyFinancials,
+    CompanyNewsItem,
     CompanyOfficer,
     CompanyProfile,
+    JobPosting,
+    JobStatus,
     OnlinePresence,
 )
+from src.collectors.news import CompanyNewsCollector
 from src.models.evidence import FactCategory, ProvenanceFact
 from src.validation.identity import parse_and_verify_orgnr
-from src.validation.ownership import is_credible_business_description
+from src.validation.ownership import (
+    EntityOwnershipClassification,
+    is_credible_business_description,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +137,7 @@ def extract_profile_from_sources(
     online_data: OnlinePresence | None = None,
     underenheter_list: list[dict[str, Any]] | None = None,
     seed_facts: dict[str, ProvenanceFact] | None = None,
+    announcements_data: list[Any] | None = None,
 ) -> CompanyProfile:
     """Synthesize raw multi-source payloads into a verified CompanyProfile.
 
@@ -848,14 +856,39 @@ def extract_profile_from_sources(
                     is_independently_confirmed=True,
                     evidence_snippet=f"Email: {online_data.contact_email}",
                 )
-            if online_data.active_jobs:
+            if online_data.has_explicit_zero_vacancies:
+                facts["job_vacancies"] = ProvenanceFact(
+                    fact_key="job_vacancies",
+                    category=FactCategory.OPERATIONAL,
+                    value=[],
+                    source_url=online_data.website_url or web_url,
+                    source_type="verified_website",
+                    source_title="Company Career Page",
+                    associated_orgnr=clean_orgnr,
+                    retrieval_timestamp=now_utc,
+                    confidence=0.95,
+                    is_independently_confirmed=True,
+                    evidence_snippet="Selskapets offisielle karriereside bekrefter at det for tiden ikke er noen ledige stillinger (0 ledige stillinger).",
+                )
+            elif online_data.active_jobs:
                 job_titles = [j.get("title") for j in online_data.active_jobs if j.get("title")]
                 if job_titles:
+                    job_details = [
+                        {
+                            "title": j.get("title"),
+                            "url": j.get("canonical_url") or j.get("url"),
+                            "location": j.get("location"),
+                            "deadline": j.get("application_deadline") or j.get("deadline"),
+                            "status": j.get("status", "open"),
+                        }
+                        for j in online_data.active_jobs
+                        if j.get("title")
+                    ]
                     facts["job_vacancies"] = ProvenanceFact(
                         fact_key="job_vacancies",
                         category=FactCategory.OPERATIONAL,
-                        value=job_titles,
-                        source_url=online_data.active_jobs[0].get("url", web_url),
+                        value=job_details,
+                        source_url=online_data.active_jobs[0].get("canonical_url") or online_data.active_jobs[0].get("url", web_url),
                         source_type="verified_website",
                         source_title="Company Career Page",
                         associated_orgnr=clean_orgnr,
@@ -933,6 +966,82 @@ def extract_profile_from_sources(
         # Website not crawled; retain registry declaration
         verified_website = website
 
+    # 5b. Comprehensive Verified News & Statutory Announcements
+    all_news = announcements_data or []
+    if all_news:
+        editorial_items = [
+            n for n in all_news
+            if getattr(n, "item_type", "") == "editorial_news"
+            or (isinstance(n, dict) and n.get("item_type") == "editorial_news")
+            or ("brreg.no" not in str(getattr(n, "canonical_url", n.get("canonical_url", "") if isinstance(n, dict) else ""))
+                and getattr(n, "publisher", n.get("publisher", "") if isinstance(n, dict) else "") != "Brønnøysundregistrene")
+        ]
+        statutory_items = [
+            n for n in all_news
+            if getattr(n, "item_type", "") == "statutory_announcement"
+            or (isinstance(n, dict) and n.get("item_type") == "statutory_announcement")
+            or ("brreg.no" in str(getattr(n, "canonical_url", n.get("canonical_url", "") if isinstance(n, dict) else ""))
+                or getattr(n, "publisher", n.get("publisher", "") if isinstance(n, dict) else "") == "Brønnøysundregistrene")
+        ]
+
+        if editorial_items and "news_articles" not in facts:
+            ed_payload = [
+                {
+                    "title": getattr(n, "headline", n.get("headline", "") if isinstance(n, dict) else ""),
+                    "url": getattr(n, "canonical_url", n.get("canonical_url", "") if isinstance(n, dict) else ""),
+                    "date": getattr(n, "publication_date", n.get("publication_date") if isinstance(n, dict) else None),
+                    "publisher": getattr(n, "publisher", n.get("publisher", "") if isinstance(n, dict) else ""),
+                    "evidence": getattr(n, "evidence", n.get("evidence", "") if isinstance(n, dict) else ""),
+                }
+                for n in editorial_items
+            ]
+            top_ed_url = ed_payload[0]["url"]
+            facts["news_articles"] = ProvenanceFact(
+                fact_key="news_articles",
+                category=FactCategory.OPERATIONAL,
+                value=ed_payload,
+                source_url=top_ed_url,
+                source_type="verified_website",
+                source_title=ed_payload[0]["publisher"] or "Company Editorial Newsroom",
+                associated_orgnr=clean_orgnr,
+                retrieval_timestamp=now_utc,
+                publication_date=ed_payload[0]["date"],
+                confidence=0.85,
+                is_independently_confirmed=True,
+                evidence_snippet=f"Redaksjonelle nyheter: {', '.join(n['title'] for n in ed_payload[:2])}",
+            )
+
+        if statutory_items and "public_announcements" not in facts:
+            stat_payload = [
+                getattr(n, "headline", n.get("headline", "") if isinstance(n, dict) else "")
+                for n in statutory_items
+            ]
+            top_stat_url = getattr(
+                statutory_items[0],
+                "canonical_url",
+                statutory_items[0].get("canonical_url", f"https://w2.brreg.no/kunngjoring/hent_en.jsp?orgnr={clean_orgnr}")
+                if isinstance(statutory_items[0], dict)
+                else f"https://w2.brreg.no/kunngjoring/hent_en.jsp?orgnr={clean_orgnr}"
+            )
+            facts["public_announcements"] = ProvenanceFact(
+                fact_key="public_announcements",
+                category=FactCategory.OPERATIONAL,
+                value=stat_payload[:5],
+                source_url=top_stat_url,
+                source_type="official_registry",
+                source_title="Brønnøysundregistrene Kunngjøringer",
+                associated_orgnr=clean_orgnr,
+                retrieval_timestamp=now_utc,
+                publication_date=getattr(
+                    statutory_items[0],
+                    "publication_date",
+                    statutory_items[0].get("publication_date") if isinstance(statutory_items[0], dict) else None
+                ),
+                confidence=0.95,
+                is_independently_confirmed=True,
+                evidence_snippet=f"Offisielle kunngjøringer fra Brønnøysundregistrene: {', '.join(stat_payload[:2])}",
+            )
+
     # Extract share capital
     kapital_raw = enhet_data.get("kapital")
     share_capital = None
@@ -1009,6 +1118,50 @@ def extract_profile_from_sources(
     for k in mismatched:
         del facts[k]
 
+    # Convert active jobs to structured JobPosting models
+    job_postings_models: list[JobPosting] = []
+    if online_data and online_data.is_identity_verified and online_data.active_jobs:
+        for j in online_data.active_jobs:
+            job_postings_models.append(
+                JobPosting(
+                    title=j.get("title", ""),
+                    canonical_url=j.get("canonical_url") or j.get("url") or (online_data.website_url or ""),
+                    location=j.get("location"),
+                    posting_date=j.get("posting_date"),
+                    application_deadline=j.get("application_deadline") or j.get("deadline"),
+                    status=JobStatus(j.get("status", "open")) if j.get("status") in ("open", "closed", "expired") else JobStatus.OPEN,
+                    evidence=j.get("evidence") or f"Stillingsannonse fra {online_data.website_url}: {j.get('title')}",
+                    ownership_verification=EntityOwnershipClassification.VERIFIED_EXACT_ENTITY.value,
+                    retrieval_timestamp=now_utc,
+                )
+            )
+
+    # Determine highest-quality business description and ground it with provenance
+    chosen_description = (
+        online_data.meta_description
+        if (online_data and online_data.is_identity_verified and online_data.meta_description and is_credible_business_description(online_data.meta_description))
+        else (
+            online_data.business_summary
+            if (online_data and online_data.is_identity_verified and online_data.business_summary and is_credible_business_description(online_data.business_summary))
+            else (statutory_purpose if statutory_purpose and is_credible_business_description(statutory_purpose, is_statutory=True) else None)
+        )
+    )
+    if chosen_description and "business_description" not in facts:
+        is_stat = (chosen_description == statutory_purpose)
+        facts["business_description"] = ProvenanceFact(
+            fact_key="business_description",
+            category=FactCategory.REGISTRATION if is_stat else FactCategory.ONLINE,
+            value=chosen_description,
+            source_url=enhet_url if is_stat else (online_data.website_url if online_data else enhet_url),
+            source_type="official_registry" if is_stat else "verified_website",
+            source_title="Brønnøysundregistrene Enhetsregisteret (Statutory Purpose)" if is_stat else "Verified Website Description",
+            associated_orgnr=clean_orgnr,
+            retrieval_timestamp=now_utc,
+            confidence=1.0 if is_stat else 0.85,
+            is_independently_confirmed=True,
+            evidence_snippet=chosen_description[:300],
+        )
+
     # Build and return the consolidated CompanyProfile
     profile = CompanyProfile(
         registration_number=clean_orgnr,
@@ -1030,21 +1183,15 @@ def extract_profile_from_sources(
         postal_address=post_addr,
         operating_locations=operating_locations,
         statutory_purpose=statutory_purpose,
-        business_description=(
-            online_data.meta_description
-            if (online_data and online_data.is_identity_verified and online_data.meta_description and is_credible_business_description(online_data.meta_description))
-            else (
-                online_data.business_summary
-                if (online_data and online_data.is_identity_verified and online_data.business_summary and is_credible_business_description(online_data.business_summary))
-                else (statutory_purpose if statutory_purpose and is_credible_business_description(statutory_purpose) else None)
-            )
-        ),
+        business_description=chosen_description,
         website=verified_website,
         phone=enhet_data.get("telefon") or (online_data.contact_phone if online_data and online_data.is_identity_verified else None),
         email=enhet_data.get("epost") or (online_data.contact_email if online_data and online_data.is_identity_verified else None),
         parent_company_orgnr=enhet_data.get("overordnetEnhet"),
         social_links=online_data.social_links if online_data else [],
-        news_items=online_data.news_items if online_data else [],
+        news_items=all_news if all_news else (online_data.news_items if online_data else []),
+        job_postings=job_postings_models,
+        has_explicit_zero_vacancies=(online_data.has_explicit_zero_vacancies if online_data else False),
         is_part_of_group=enhet_data.get("erIKonsern"),
         share_capital=share_capital,
         officers=officers,

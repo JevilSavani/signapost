@@ -185,3 +185,72 @@ def test_social_account_name_match_alone_insufficient_evidence():
     assert res_linked.is_verified is True
     assert res_linked.ownership_classification == "company_owned_or_official"
     assert "confirmed via outbound link from verified official corporate website" in res_linked.evidence.lower()
+
+
+def test_roger_aamodt_bygg_rejects_eiendom_facebook_page():
+    """Verify organizer regression: ROGER AAMODT BYGG AS rejects Facebook page for Roger Aamodt Eiendom AS."""
+    from src.validation.ownership import EntityOwnershipClassification
+
+    result = classify_social_account(
+        url="https://www.facebook.com/rogeraamodteiendom/",
+        anchor_context="Besøk oss på Facebook",
+        expected_name="ROGER AAMODT BYGG AS",
+        expected_orgnr="988412988",
+        is_linked_from_official_website=True,
+    )
+
+    assert result.is_verified is False
+    assert result.status == SocialAccountStatus.WRONG_ENTITY
+    assert result.classification == EntityOwnershipClassification.REJECTED_WRONG_ENTITY
+    assert "eiendom" in result.rejection_reason.lower()
+    assert "bygg" in result.rejection_reason.lower()
+
+
+def test_otis_as_rejects_global_otis_elevator_company_youtube_channel():
+    """Verify organizer regression: OTIS AS (Norwegian subsidiary) rejects global Otis Elevator Company YouTube channel."""
+    from src.validation.ownership import EntityOwnershipClassification
+
+    result = classify_social_account(
+        url="https://www.youtube.com/user/OtisElevatorCo",
+        anchor_context="Otis on YouTube",
+        expected_name="OTIS AS",
+        expected_orgnr="919419105",
+        is_linked_from_official_website=True,
+    )
+
+    assert result.is_verified is False
+    assert result.status == SocialAccountStatus.PARENT_GROUP
+    assert result.classification == EntityOwnershipClassification.VERIFIED_OFFICIAL_PARENT
+    assert "global parent corporation" in result.rejection_reason.lower()
+
+
+def test_similar_company_names_isolated():
+    """Verify that similar company names with differing sectors are isolated and not conflated."""
+    from src.validation.ownership import EntityOwnershipClassification
+
+    # Target: Bergen Maritime Consulting AS. Handle has 'drift'
+    res = classify_social_account(
+        url="https://www.facebook.com/bergenmaritimedrift",
+        anchor_context="Bergen Maritime på Facebook",
+        expected_name="BERGEN MARITIME CONSULTING AS",
+        expected_orgnr="923609016",
+        is_linked_from_official_website=True,
+    )
+    assert res.is_verified is False
+    assert res.classification == EntityOwnershipClassification.REJECTED_WRONG_ENTITY
+
+
+def test_personal_owner_account_rejected_as_company_official():
+    """Verify that an individual owner's personal profile is rejected as official company social profile."""
+    from src.validation.ownership import EntityOwnershipClassification
+
+    res = classify_social_account(
+        url="https://www.linkedin.com/in/rogeraamodt",
+        anchor_context="Roger Aamodt personlig LinkedIn",
+        expected_name="ROGER AAMODT BYGG AS",
+        expected_orgnr="988412988",
+        is_linked_from_official_website=True,
+    )
+    assert res.is_verified is False
+    assert res.classification == EntityOwnershipClassification.UNVERIFIED
+    assert "personal profile" in res.rejection_reason.lower()

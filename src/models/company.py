@@ -1,10 +1,48 @@
 """Complete company profile domain model with strict evidentiary grounding."""
 
 from datetime import datetime, timezone
-from typing import Any
+from enum import Enum
+from typing import Any, Union
 from pydantic import BaseModel, Field
 
 from src.models.evidence import ProvenanceFact, FactChangeRecord, ResearchOutcome
+
+
+class JobStatus(str, Enum):
+    """Lifecycle status of a company job posting."""
+
+    OPEN = "open"
+    CLOSED = "closed"
+    EXPIRED = "expired"
+    UNKNOWN = "unknown"
+
+
+class JobPosting(BaseModel):
+    """Structured, verified company job posting."""
+
+    title: str = Field(description="Job vacancy title")
+    canonical_url: str = Field(description="Canonical direct link to job posting")
+    location: str | None = Field(default=None, description="Location or municipality")
+    posting_date: str | None = Field(default=None, description="ISO publication date (YYYY-MM-DD)")
+    application_deadline: str | None = Field(default=None, description="Application deadline date")
+    status: JobStatus = Field(default=JobStatus.OPEN, description="Job status: open, closed, expired, unknown")
+    evidence: str | None = Field(default=None, description="Snippet or proof supporting the job posting")
+    ownership_verification: str = Field(default="verified_exact_entity", description="Ownership classification")
+    retrieval_timestamp: str | None = Field(default=None, description="ISO timestamp of discovery")
+
+
+class CompanyNewsItem(BaseModel):
+    """Structured, verified company news item or statutory announcement."""
+
+    headline: str = Field(description="Article or announcement title")
+    canonical_url: str = Field(description="Canonical URL to the article")
+    publication_date: str | None = Field(default=None, description="ISO publication date (YYYY-MM-DD)")
+    publisher: str | None = Field(default=None, description="Publisher or newsroom name")
+    summary: str | None = Field(default=None, description="Short factual summary of the news item")
+    evidence: str | None = Field(default=None, description="Evidence snippet or quote")
+    item_type: str = Field(default="editorial_news", description="Type: 'editorial_news' or 'statutory_announcement'")
+    ownership_verification: str = Field(default="verified_exact_entity", description="Ownership verification status")
+    retrieval_timestamp: str | None = Field(default=None, description="ISO timestamp of discovery")
 
 
 class Address(BaseModel):
@@ -69,6 +107,7 @@ class OnlinePresence(BaseModel):
     ownership_reasoning: str | None = None
     declared_orgnr: str | None = None
     is_identity_verified: bool = False
+    has_explicit_zero_vacancies: bool = False
     crawled_news_url: str | None = None
     crawled_subpages: dict[str, str] = Field(default_factory=dict)
 
@@ -111,7 +150,9 @@ class CompanyProfile(BaseModel):
     phone: str | None = None
     email: str | None = None
     social_links: list[dict[str, Any]] = Field(default_factory=list)
-    news_items: list[dict[str, Any]] = Field(default_factory=list)
+    news_items: list[Union[CompanyNewsItem, dict[str, Any]]] = Field(default_factory=list)
+    job_postings: list[Union[JobPosting, dict[str, Any]]] = Field(default_factory=list)
+    has_explicit_zero_vacancies: bool = False
 
     is_part_of_group: bool | None = None
     parent_company_orgnr: str | None = None
